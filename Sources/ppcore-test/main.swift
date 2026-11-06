@@ -155,5 +155,73 @@ do { // Cost: a busy mixer, measured.
     pp_mixer_destroy(m)
 }
 
+// Clock bridge: two simulated clocks with noisy timestamps.
+struct BridgeRun {
+    var ratio = 0.0
+    var underruns: UInt64 = 0
+    var overruns: UInt64 = 0
+    var resyncs: UInt64 = 0
+    var peakAfterGap: Float = 0
+    var staleFrames = 0
+}
+
+func simulate(ppm: Double, producerBlock: Int, consumerBlock: Int, saved: Double, seconds: Double,
+    consumerGap: ClosedRange<Double>? = nil, producerGap: ClosedRange<Double>? = nil) -> BridgeRun {
+    let rate = 48000.0
+    let b = pp_bridge_create(rate, Int32(producerBlock), Int32(consumerBlock), saved)!
+    var generator = SystemRandomNumberGenerator()
+    let jitter = { (g: inout SystemRandomNumberGenerator) -> Double in
+        Double.random(in: -60e-6...60e-6, using: &g)
+    }
+    let inLeft = [Float](repeating: 0.25, count: producerBlock)
+    var outLeft = [Float](repeating: 0, count: consumerBlock)
+    var outRight = outLeft
+    var nextProducer = 0.0
+    var nextConsumer = 0.0
+    let producerStep = Double(producerBlock) / (rate * (1 + ppm * 1e-6))
+    let consumerStep = Double(consumerBlock) / rate
+    var run = BridgeRun()
+    while nextProducer < seconds || nextConsumer < seconds {
+        if nextProducer <= nextConsumer {
+            if producerGap?.contains(nextProducer) != true {
+                pp_bridge_write(b, inLeft, inLeft, Int32(producerBlock), nextProducer + jitter(&generator))
+            }
+            nextProducer += producerStep
+        } else {
+            if consumerGap?.contains(nextConsumer) != true {
+                pp_bridge_read(b, &outLeft, &outRight, Int32(consumerBlock), nextConsumer + jitter(&generator))
+                if let gap = producerGap, nextConsumer > gap.lowerBound + 0.3, nextConsumer < gap.upperBound {
+                    run.staleFrames += outLeft.filter { $0 != 0 }.count
+                }
+                if nextConsumer > seconds - 0.5 { run.peakAfterGap = max(run.peakAfterGap, outLeft.max() ?? 0) }
+            }
+            nextConsumer += consumerStep
+        }
+    }
+    run.ratio = pp_bridge_ratio_ppm(b)
+    run.underruns = pp_bridge_underruns(b)
+    run.overruns = pp_bridge_overruns(b)
+    run.resyncs = pp_bridge_resyncs(b)
+    pp_bridge_destroy(b)
+    return run
+}
+
+do {
+    let input = simulate(ppm: 37, producerBlock: 512, consumerBlock: 128, saved: 35, seconds: 90)
+    check("bridge, device to engine, locks", abs(input.ratio - 37) < 1.5 && input.underruns == 0 && input.overruns == 0, "\(input)")
+    let output = simulate(ppm: -18.4, producerBlock: 128, consumerBlock: 512, saved: -16, seconds: 90)
+    check("bridge, engine to device, locks", abs(output.ratio + 18.4) < 1.5 && output.underruns == 0 && output.overruns == 0, "\(output)")
+    let small = simulate(ppm: 12, producerBlock: 32, consumerBlock: 128, saved: 12, seconds: 60)
+    check("bridge, small blocks", small.underruns == 0 && small.overruns == 0, "\(small)")
+    let large = simulate(ppm: -85, producerBlock: 1024, consumerBlock: 128, saved: 0, seconds: 300)
+    check("bridge, large block, unknown rate", abs(large.ratio + 85) < 3 && large.underruns == 0, "\(large)")
+    let sleep = simulate(ppm: 20, producerBlock: 512, consumerBlock: 128, saved: 20, seconds: 40, consumerGap: 10...15)
+    check("bridge re-locks after the consumer stops", sleep.resyncs == 1 && sleep.underruns == 0 && sleep.peakAfterGap > 0.2, "\(sleep)")
+    let stall = simulate(ppm: 20, producerBlock: 512, consumerBlock: 128, saved: 20, seconds: 40, producerGap: 10...15)
+    check("bridge goes silent, not stale, when the device stalls", stall.staleFrames == 0, "\(stall)")
+    check("and comes back", stall.peakAfterGap > 0.2, "\(stall.peakAfterGap)")
+    check("with its rate intact", abs(stall.ratio - 20) < 2, "\(stall.ratio)")
+}
+
 print(failures == 0 ? "all passed" : "\(failures) FAILED")
 exit(failures == 0 ? 0 : 1)

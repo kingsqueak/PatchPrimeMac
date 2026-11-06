@@ -62,6 +62,47 @@ PPMeter pp_mixer_read_input_meter(PPMixer *m, int input);
 PPMeter pp_mixer_read_bus_meter(PPMixer *m, int bus);
 PPMeter pp_mixer_read_output_meter(PPMixer *m, int output);
 
+// The engine. Hardware outputs stay muted until pp_engine_enable_hardware_output.
+typedef struct PPEngine PPEngine;
+typedef struct PPEngineStats {
+    unsigned long long cycles;
+    unsigned long long underruns;
+    unsigned long long overruns;
+    unsigned long long resyncs;
+    double maxGapMs;
+    float hardwarePeak; // the highest sample written to any hardware output
+    int devices;
+} PPEngineStats;
+
+PPEngine *pp_engine_create(unsigned int hiddenDevice, double sampleRate);
+void pp_engine_destroy(PPEngine *e);
+PPMixer *pp_engine_mixer(PPEngine *e);
+int pp_engine_start(PPEngine *e);
+void pp_engine_enable_hardware_output(PPEngine *e, int enabled, float limit);
+void pp_engine_bind_input_virtual(PPEngine *e, int input, int slot);
+void pp_engine_bind_output_virtual(PPEngine *e, int output, int slot);
+int pp_engine_bind_input_device(PPEngine *e, int input, unsigned int device, int left, int right, double savedPpm);
+int pp_engine_bind_output_device(PPEngine *e, int output, unsigned int device, int left, int right, double savedPpm);
+void pp_engine_unbind_input(PPEngine *e, int input);
+void pp_engine_unbind_output(PPEngine *e, int output);
+void pp_engine_device_lost(PPEngine *e, unsigned int device);
+PPEngineStats pp_engine_stats(PPEngine *e);
+double pp_engine_input_ratio_ppm(PPEngine *e, int input);
+double pp_engine_output_ratio_ppm(PPEngine *e, int output);
+
+// The clock bridge, exposed for the offline tests.
+typedef struct PPBridge PPBridge;
+PPBridge *pp_bridge_create(double rate, int producerBlock, int consumerBlock, double savedPpm);
+void pp_bridge_destroy(PPBridge *b);
+void pp_bridge_write(PPBridge *b, const float *left, const float *right, int frames, double seconds);
+void pp_bridge_read(PPBridge *b, float *left, float *right, int frames, double seconds);
+double pp_bridge_ratio_ppm(const PPBridge *b);
+double pp_bridge_position(const PPBridge *b);
+double pp_bridge_target(const PPBridge *b);
+unsigned long long pp_bridge_underruns(const PPBridge *b);
+unsigned long long pp_bridge_overruns(const PPBridge *b);
+unsigned long long pp_bridge_resyncs(const PPBridge *b);
+
 #ifdef __cplusplus
 }
 #endif

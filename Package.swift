@@ -12,7 +12,13 @@ let package = Package(
         .target(
             name: "PPCore",
             path: "Sources/PPCore",
-            cxxSettings: [.unsafeFlags(["-O3", "-ffast-math", "-fno-exceptions", "-fno-rtti"])]),
+            cxxSettings: [.unsafeFlags(["-O3", "-ffast-math", "-fno-exceptions", "-fno-rtti"])],
+            linkerSettings: [.linkedFramework("CoreAudio")]),
+        .executableTarget(
+            name: "ppengine-live",
+            dependencies: ["PPCore"],
+            path: "Sources/ppengine-live",
+            linkerSettings: [.linkedFramework("CoreAudio"), .linkedFramework("CoreFoundation")]),
         .executableTarget(
             name: "ppcore-test",
             dependencies: ["PPCore"],
