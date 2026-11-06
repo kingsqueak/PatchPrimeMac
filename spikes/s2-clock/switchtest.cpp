@@ -37,6 +37,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <string>
 #include <thread>
 #include <vector>
@@ -87,6 +88,9 @@ struct Follower
     std::atomic<double> lastEngineSeconds{0};
     std::atomic<UInt64> underruns{0}, overruns{0}, cycles{0};
     std::atomic<UInt64> startCycle{0};
+    double lastCycleSeconds = 0;
+    std::atomic<UInt64> resyncs{0};
+    std::atomic<double> position{0};
     std::array<std::atomic<UInt64>, 32> underrunAt{}; // cycles after the start
     std::atomic<double> ratioPpm{0};
     std::atomic<double> firstSoundSeconds{0}; // host time of the first faded-in frame
@@ -108,6 +112,7 @@ struct Engine
     std::atomic<UInt64> cycles{0};
     double lastSeconds = 0;
     std::atomic<double> maxGapMs{0};
+    std::atomic<double> intervalGapMs{0};
     // Sink side of the virtual mic.
     bool haveLast = false;
     UInt32 last = 0;
@@ -127,6 +132,9 @@ OSStatus engineProc(AudioObjectID, const AudioTimeStamp *now, const AudioBufferL
         const double gap = (seconds - e->lastSeconds) * 1e3;
         if (gap > e->maxGapMs.load(std::memory_order_relaxed)) {
             e->maxGapMs.store(gap, std::memory_order_relaxed);
+        }
+        if (gap > e->intervalGapMs.load(std::memory_order_relaxed)) {
+            e->intervalGapMs.store(gap, std::memory_order_relaxed);
         }
     }
     e->lastSeconds = seconds;
@@ -190,6 +198,13 @@ OSStatus deviceProc(AudioObjectID, const AudioTimeStamp *now, const AudioBufferL
     f->cycles.fetch_add(1, std::memory_order_relaxed);
 
     const double seconds = double(now->mHostTime) * kSecPerTick;
+    if (f->lastCycleSeconds > 0 && seconds - f->lastCycleSeconds > 0.1) {
+        // The device stopped and came back (sleep, a USB hiccup). The ring is stale:
+        // start again from the target instead of trying to chase it.
+        f->started = false;
+        f->resyncs.fetch_add(1, std::memory_order_relaxed);
+    }
+    f->lastCycleSeconds = seconds;
     const double lastEngine = f->lastEngineSeconds.load(std::memory_order_acquire);
     if (lastEngine == 0) {
         return noErr;
@@ -202,7 +217,8 @@ OSStatus deviceProc(AudioObjectID, const AudioTimeStamp *now, const AudioBufferL
         }
         f->ringL.consume(size_t(fill - f->target));
         f->ringR.consume(size_t(fill - f->target));
-        f->controller.lock(f->target + since, f->savedPpm);
+        const double known = f->ratioPpm.load(std::memory_order_relaxed);
+        f->controller.lock(f->target + since, known != 0 ? known : f->savedPpm);
         f->started = true;
         f->startCycle.store(f->cycles.load(std::memory_order_relaxed),
             std::memory_order_relaxed);
@@ -223,6 +239,7 @@ OSStatus deviceProc(AudioObjectID, const AudioTimeStamp *now, const AudioBufferL
         std::fill(f->scratchR.begin() + gotR, f->scratchR.begin() + frames, 0.0f);
     }
     f->ratioPpm.store((ratio - 1) * 1e6, std::memory_order_relaxed);
+    f->position.store(double(f->ringL.fill()) + since, std::memory_order_relaxed);
 
     auto *samples = static_cast<float *>(out->mBuffers[0].mData);
     const float want = f->wantGain.load(std::memory_order_relaxed);
@@ -391,6 +408,7 @@ struct Options
     UInt32 buffer = 0;
     int switches = 12;
     double dwell = 3;
+    int watch = 0;
 };
 
 // Opens a device and joins it to the engine. The engine carries on throughout.
@@ -441,6 +459,8 @@ int main(int argc, char **argv)
             opts.buffer = UInt32(std::atoi(argv[++i]));
         } else if (a == "--switches" && i + 1 < argc) {
             opts.switches = std::atoi(argv[++i]);
+        } else if (a == "--watch" && i + 1 < argc) {
+            opts.watch = std::atoi(argv[++i]);
         } else if (a == "--dwell" && i + 1 < argc) {
             opts.dwell = std::atof(argv[++i]);
         } else {
@@ -549,6 +569,129 @@ int main(int argc, char **argv)
         open(*engine, 0, outputs[0], opts);
         open(*engine, 1, outputs[1], opts);
         std::this_thread::sleep_for(std::chrono::seconds(2));
+    }
+
+    if (opts.watch > 0) {
+        // Failure test: both outputs stay open and silent. Watches for a device
+        // going away and coming back, and reopens it, while the engine carries on.
+        const auto stamp = [] {
+            const std::time_t t = std::time(nullptr);
+            char text[32];
+            std::strftime(text, sizeof text, "%H:%M:%S", std::localtime(&t));
+            return std::string(text);
+        };
+        const auto alive = [](AudioObjectID id) {
+            AudioObjectPropertyAddress a{kAudioDevicePropertyDeviceIsAlive,
+                kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+            UInt32 value = 0, size = sizeof value;
+            return AudioObjectGetPropertyData(id, &a, 0, nullptr, &size, &value) == noErr
+                && value != 0;
+        };
+        const auto defaultName = [] {
+            AudioObjectID id = defaultOutput();
+            AudioObjectPropertyAddress n{kAudioObjectPropertyName,
+                kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+            CFStringRef value = nullptr;
+            UInt32 s = sizeof value;
+            if (AudioObjectGetPropertyData(id, &n, 0, nullptr, &s, &value) != noErr || !value) {
+                return std::string("?");
+            }
+            char buffer[256] = {};
+            CFStringGetCString(value, buffer, sizeof buffer, kCFStringEncodingUTF8);
+            CFRelease(value);
+            return std::string(buffer);
+        };
+        std::printf("%s watching for %d s; default output %s\n", stamp().c_str(), opts.watch,
+            defaultName().c_str());
+        std::fflush(stdout);
+        std::array<bool, 2> open_{true, true};
+        std::array<UInt64, 2> lastResyncs{0, 0};
+        UInt64 lastBreaks = 0;
+        const auto begin = std::chrono::steady_clock::now();
+        auto nextReport = begin + std::chrono::seconds(30);
+        while (std::chrono::steady_clock::now() - begin < std::chrono::seconds(opts.watch)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            for (int i = 0; i < 2; ++i) {
+                Output &o = outputs[size_t(i)];
+                if (open_[size_t(i)] && !alive(o.id)) {
+                    std::printf("%s %s GONE: engine cycles %llu, ramp breaks %llu, default output %s\n",
+                        stamp().c_str(), o.name.c_str(), engine->cycles.load(),
+                        engine->breaks.load(), defaultName().c_str());
+                    std::fflush(stdout);
+                    close(*engine, i, o, retired);
+                    open_[size_t(i)] = false;
+                } else if (!open_[size_t(i)]) {
+                    const AudioObjectID id = findOutputByName(o.name);
+                    if (id != kAudioObjectUnknown) {
+                        const auto t0 = std::chrono::steady_clock::now();
+                        o.id = id;
+                        open(*engine, i, o, opts);
+                        open_[size_t(i)] = true;
+                        lastResyncs[size_t(i)] = 0;
+                        for (int w = 0; w < 3000 && !o.follower->running.load(); ++w) {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                        }
+                        std::printf("%s %s BACK: running in %.0f ms, ramp breaks %llu, default output %s\n",
+                            stamp().c_str(), o.name.c_str(),
+                            std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - t0).count(),
+                            engine->breaks.load(), defaultName().c_str());
+                        std::fflush(stdout);
+                    }
+                } else {
+                    const UInt64 r = o.follower->resyncs.load();
+                    if (r != lastResyncs[size_t(i)]) {
+                        std::printf("%s %s re-locked after a gap (%llu so far)\n", stamp().c_str(),
+                            o.name.c_str(), r);
+                        std::fflush(stdout);
+                        lastResyncs[size_t(i)] = r;
+                    }
+                }
+            }
+            const UInt64 breaks = engine->breaks.load();
+            if (breaks != lastBreaks) {
+                std::printf("%s ramp breaks now %llu; longest engine gap this period %.1f ms\n",
+                    stamp().c_str(), breaks, engine->intervalGapMs.load());
+                std::fflush(stdout);
+                lastBreaks = breaks;
+            }
+            if (std::chrono::steady_clock::now() >= nextReport) {
+                nextReport += std::chrono::seconds(opts.watch > 3600 ? 600 : 30);
+                std::printf("%s", stamp().c_str());
+                for (int i = 0; i < 2; ++i) {
+                    const Follower *f = outputs[size_t(i)].follower;
+                    if (f) {
+                        std::printf("  %s %+.2f ppm pos %.0f under %llu over %llu",
+                            outputs[size_t(i)].name.c_str(), f->ratioPpm.load(), f->position.load(),
+                            f->underruns.load(), f->overruns.load());
+                    } else {
+                        std::printf("  %s closed", outputs[size_t(i)].name.c_str());
+                    }
+                }
+                std::printf("  engine gap %.2f ms, breaks %llu\n", engine->intervalGapMs.exchange(0),
+                    engine->breaks.load());
+                std::fflush(stdout);
+            }
+        }
+        for (int i = 0; i < 2; ++i) {
+            if (outputs[size_t(i)].follower) {
+                close(*engine, i, outputs[size_t(i)], retired);
+            }
+        }
+        AudioDeviceStop(mic, clientId);
+        AudioDeviceStop(engineDevice, engineId);
+        AudioDeviceDestroyIOProcID(mic, clientId);
+        AudioDeviceDestroyIOProcID(engineDevice, engineId);
+        command(engineDevice, "remove 1");
+        UInt64 under = 0, over = 0;
+        for (const Follower *f : retired) {
+            under += f->underruns.load();
+            over += f->overruns.load();
+        }
+        std::printf("%s finished: engine cycles %llu, ramp %llu frames, %llu breaks, follower underruns %llu, overruns %llu, max gap %.2f ms\n",
+            stamp().c_str(), engine->cycles.load(), engine->frames.load(), engine->breaks.load(),
+            under, over, engine->maxGapMs.load());
+        return 0;
     }
 
     std::puts(" # to                   to first sound ms   breaks so far   max engine gap ms");
