@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+	<key>AudioServerPlugIn_MachServices</key>
+	<array/>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>PatchPrimeMacSpike</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.kingsqueak.patchprimemac.spike</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>PatchPrimeMacSpike</string>
+	<key>CFBundlePackageType</key>
+	<string>BNDL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.0.1</string>
+	<key>CFBundleSignature</key>
+	<string>????</string>
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>MacOSX</string>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>0.0.1</string>
+	<key>CFPlugInFactories</key>
+	<dict>
+		<key>7C7A5E0E-3B1F-4F4E-9B7E-5D0C1E6A9B11</key>
+		<string>PatchPrimeMacSpikeEntry</string>
+	</dict>
+	<key>CFPlugInTypes</key>
+	<dict>
+		<key>443ABAB8-E7B3-491A-B985-BEB9187030DB</key>
+		<array>
+			<string>7C7A5E0E-3B1F-4F4E-9B7E-5D0C1E6A9B11</string>
+		</array>
+	</dict>
+	<key>sandboxSafe</key>
+	<true/>
+  </dict>
+</plist>
