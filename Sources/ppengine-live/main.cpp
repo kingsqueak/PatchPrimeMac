@@ -111,16 +111,16 @@ int main()
         kAudioObjectPropertyElementMain};
     AudioObjectSetPropertyData(kAudioObjectSystemObject, &rl, 0, nullptr, sizeof none, &none);
 
-    const AudioObjectID hidden = byUID("PatchPrimeMacSpike.Engine");
+    const AudioObjectID hidden = byUID("PatchPrimeMac.Engine");
     const AudioObjectID m2 = byName("M2");
     if (hidden == kAudioObjectUnknown || m2 == kAudioObjectUnknown) {
         std::puts("engine device or M2 missing");
         return 1;
     }
-    command(hidden, "add 1 in Spike Mic");
+    command(hidden, "add 1 in PatchPrimeMac Test Mic");
     AudioObjectID mic = kAudioObjectUnknown;
     for (int i = 0; i < 40 && mic == kAudioObjectUnknown; ++i) {
-        mic = byUID("PatchPrimeMacSpike.Slot1");
+        mic = byUID("PatchPrimeMac.Device.1");
         pause(0.05);
     }
     UInt32 buffer = 128;
@@ -196,9 +196,14 @@ int main()
         s.cycles, s.underruns, s.overruns, s.resyncs, s.maxGapMs, s.devices);
     check("no underruns or overruns while running", s.underruns == 0 && s.overruns == 0);
 
+    pp_engine_destroy(e);
+    pause(0.5);
+    clientPeak.store(0);
+    pause(3);
+    check("with the engine stopped, the virtual mic is silent, not replaying old audio",
+        clientPeak.load() == 0.f);
     AudioDeviceStop(mic, clientId);
     AudioDeviceDestroyIOProcID(mic, clientId);
-    pp_engine_destroy(e);
     command(hidden, "remove 1");
     std::puts(failures == 0 ? "all passed" : "FAILED");
     return failures == 0 ? 0 : 1;
