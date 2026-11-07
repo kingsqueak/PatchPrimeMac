@@ -333,7 +333,7 @@ struct ParamControl: View {
                     })
                 Text(text(shown)).font(.system(size: 11, design: .monospaced)).frame(width: 84, alignment: .trailing)
             }
-            .help("Double-click to reset to \(text(info.initial)). Scroll to adjust. Fine steps: hold Option or Command, or scroll sideways (thumb wheel, or Shift with the wheel).")
+            .help("Double-click to reset to \(text(info.initial)). Scroll to adjust; Option, Command or the thumb wheel for fine steps.")
         }
     }
 }
@@ -356,6 +356,7 @@ struct NativeSlider: NSViewRepresentable {
         var onReset: () -> Void = {}
         var tracking = false
         private var scrollEnd: DispatchWorkItem?
+        private var reader = WheelReader()
 
         override func mouseDown(with event: NSEvent) {
             if event.clickCount == 2 {
@@ -369,17 +370,8 @@ struct NativeSlider: NSViewRepresentable {
         }
 
         override func scrollWheel(with event: NSEvent) {
-            let horizontal = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY)
-            let raw = horizontal ? event.scrollingDeltaX : event.scrollingDeltaY
-            guard raw != 0 else { return }
-            // A trackpad sends fine deltas in points; a wheel sends a line per notch.
-            var step = event.hasPreciseScrollingDeltas ? raw / 800 : raw / 200
-            // Fine steps: Option or Command held, read from the keyboard itself, since
-            // mouse utilities (Logi Options+) can drop modifiers from scroll events; or
-            // a sideways scroll (a thumb wheel, or Shift with the main wheel).
-            let keys = NSEvent.modifierFlags.union(event.modifierFlags)
-            if keys.contains(.option) || keys.contains(.command) || horizontal { step /= 10 }
-            if event.isDirectionInvertedFromDevice { step = -step }
+            let step = reader.steps(event) * 0.005 // half a percent of the travel a notch
+            guard step != 0 else { return }
             let next = min(1, max(0, doubleValue + Double(step)))
             guard next != doubleValue else { return }
             doubleValue = next
@@ -680,6 +672,7 @@ struct ScrollCatcher: NSViewRepresentable {
         var onDrag: (CGSize) -> Void = { _ in }
         var onEnd: () -> Void = {}
         private var from: NSPoint?
+        private var reader = WheelReader()
 
         override func mouseDragged(with event: NSEvent) {
             guard let from else { return }
@@ -693,14 +686,9 @@ struct ScrollCatcher: NSViewRepresentable {
         }
 
         override func scrollWheel(with event: NSEvent) {
-            let horizontal = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY)
-            let raw = horizontal ? event.scrollingDeltaX : event.scrollingDeltaY
-            guard raw != 0 else { return }
             // In octaves of Q: a notch is a twentieth of one.
-            var step = Double(event.hasPreciseScrollingDeltas ? raw / 160 : raw / 20)
-            let keys = NSEvent.modifierFlags.union(event.modifierFlags)
-            if keys.contains(.option) || keys.contains(.command) || horizontal { step /= 10 }
-            if event.isDirectionInvertedFromDevice { step = -step }
+            let step = reader.steps(event) / 20
+            guard step != 0 else { return }
             onScroll(step)
         }
 
@@ -858,48 +846,10 @@ struct Spinner: View {
             Stepper("", onIncrement: { change(stepped(1)) }, onDecrement: { change(stepped(-1)) })
                 .labelsHidden().controlSize(.small)
         }
-        .overlay(WheelCatcher { steps in change(stepped(steps)) })
+        .onWheel(whole: true) { steps in change(stepped(steps)) }
         .help("\(info.label): \(Self.show(value, unit: info.unit)) \(info.unit). Type a value and press Return, or use the arrows.")
         .onAppear { text = Self.show(value, unit: info.unit) }
         .onChange(of: value) { _, v in if !editing { text = Self.show(v, unit: info.unit) } }
         .onChange(of: editing) { _, now in if !now { text = Self.show(value, unit: info.unit) } }
     }
-}
-
-/// Lies over a control and takes only the scroll wheel: clicks and typing go through
-/// to what's underneath. Reports whole steps (a wheel notch, or about 12 points of
-/// trackpad), or tenths of one with Option or Command held or a sideways scroll.
-struct WheelCatcher: NSViewRepresentable {
-    var steps: (Double) -> Void
-
-    final class Catcher: NSView {
-        var onSteps: (Double) -> Void = { _ in }
-        private var carried = 0.0
-
-        override func hitTest(_ point: NSPoint) -> NSView? {
-            NSApp.currentEvent?.type == .scrollWheel ? super.hitTest(point) : nil
-        }
-
-        override func scrollWheel(with event: NSEvent) {
-            let horizontal = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY)
-            var raw = Double(horizontal ? event.scrollingDeltaX : event.scrollingDeltaY)
-            guard raw != 0 else { return }
-            if event.isDirectionInvertedFromDevice { raw = -raw }
-            let keys = NSEvent.modifierFlags.union(event.modifierFlags)
-            let fine = keys.contains(.option) || keys.contains(.command) || horizontal
-            if event.hasPreciseScrollingDeltas {
-                carried += raw / 12
-                let whole = carried.rounded(.towardZero)
-                guard whole != 0 else { return }
-                carried -= whole
-                onSteps(fine ? whole / 10 : whole)
-            } else {
-                let notches = raw > 0 ? 1.0 : -1.0 // one step a notch, however fast it spins
-                onSteps(fine ? notches / 10 : notches)
-            }
-        }
-    }
-
-    func makeNSView(context: Context) -> Catcher { Catcher() }
-    func updateNSView(_ view: Catcher, context: Context) { view.onSteps = steps }
 }

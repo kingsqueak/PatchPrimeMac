@@ -86,12 +86,15 @@ struct LiveMeter: NSViewRepresentable {
     }
 }
 
-/// A vertical fader in decibels. Reports while dragging; double-click returns to 0 dB.
+/// A vertical fader in decibels. Reports while dragging; double-click returns to 0 dB;
+/// the wheel moves it half a dB a notch.
 struct Fader: View {
     var db: Float
     var onChange: (Float) -> Void
     @State private var dragStart: Float?
     @State private var dragValue: Float? // follows the hand, not the round trip
+    @State private var wheelValue: Float?
+    @State private var wheelEnd: DispatchWorkItem?
 
     private let capHeight: CGFloat = 26
 
@@ -125,6 +128,21 @@ struct Fader: View {
                     dragValue = nil
                 })
             .simultaneousGesture(TapGesture(count: 2).onEnded { onChange(0) })
+            .onWheel { steps in
+                // Half a dB a notch, from wherever it is, as with the effect controls.
+                let from = wheelValue ?? db
+                let next = min(Decibels.top, max(Decibels.floor, from + Float(steps) * 0.5))
+                wheelValue = next
+                dragValue = next
+                onChange(next)
+                wheelEnd?.cancel()
+                let work = DispatchWorkItem {
+                    wheelValue = nil
+                    dragValue = nil
+                }
+                wheelEnd = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
+            }
         }
     }
 }

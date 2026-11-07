@@ -152,7 +152,7 @@ struct MixerView: View {
 struct RoutingView: View {
     @EnvironmentObject var model: Model
 
-    /// Click turns a route on at 0 dB or off. Right-click sets its level.
+    /// Click turns a route on at 0 dB or off. Scroll sets its level; so does right-click.
     private func cell(_ gain: Float?, color: Color, _ route: [String]) -> some View {
         Button {
             model.send(route + [gain == nil ? "1" : "0"])
@@ -166,6 +166,13 @@ struct RoutingView: View {
             .frame(width: 58, height: 26)
         }
         .buttonStyle(.plain)
+        .onWheel { steps in
+            // A route that's on: half a dB a notch, down to -60 dB (it stays on).
+            guard let gain else { return }
+            let db = min(Decibels.top, max(Decibels.floor + 0.5, Decibels.fromGain(gain) + Float(steps) * 0.5))
+            model.sendLevel(route.joined(separator: " "), route + ["\(Decibels.toGain(db))"])
+        }
+        .help("Click: on at 0 dB, or off. Scroll: level. Right-click: set a level.")
         .contextMenu {
             ForEach([0, -3, -6, -12, -20], id: \.self) { (db: Int) in
                 Button("\(db) dB") { model.send(route + ["\(Decibels.toGain(Float(db)))"]) }
