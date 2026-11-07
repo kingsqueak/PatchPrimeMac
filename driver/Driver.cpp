@@ -21,15 +21,22 @@
 
 #include <array>
 #include <atomic>
+#include <functional>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace {
 
-constexpr UInt32 kSampleRate = 48000;
+// Every device runs at one rate, chosen by the user. Changing any device's rate (from
+// PatchPrimeMac, or Audio MIDI Setup) changes all of them, since they share a clock.
+constexpr Float64 kRates[] = {44100, 48000, 96000, 192000};
+std::atomic<Float64> gRate{48000};
+std::function<void(Float64)> gOnRate; // set once by the plugin, before any device exists
 constexpr UInt32 kSlots = 16;
 constexpr UInt32 kEngineChannels = kSlots * 2;
 constexpr UInt32 kPeriodFrames = 16384;
@@ -40,6 +47,7 @@ constexpr AudioObjectPropertySelector kRateProperty = 'pprt';
 constexpr AudioObjectPropertySelector kListProperty = 'ppls';
 const char *const kEngineUID = "PatchPrimeMac.Engine";
 const char *const kStorageKey = "devices";
+const char *const kRateKey = "rate";
 
 // One timeline for every device. Rebased when the rate changes, so it stays
 // continuous. Readers use a seqlock: several IO threads call this at once.
@@ -51,7 +59,8 @@ public:
         mach_timebase_info_data_t tb{};
         mach_timebase_info(&tb);
         const double hostPerSecond = 1e9 * double(tb.denom) / double(tb.numer);
-        nominalTicksPerPeriod_ = hostPerSecond * kPeriodFrames / kSampleRate;
+        hostPerSecond_ = hostPerSecond;
+        nominalTicksPerPeriod_ = hostPerSecond * kPeriodFrames / gRate.load();
         ticksPerPeriod_.store(nominalTicksPerPeriod_);
         anchorHost_.store(mach_absolute_time());
     }
@@ -79,6 +88,28 @@ public:
     void setRatePpm(double ppm)
     {
         std::lock_guard lock(writer_);
+        ppm_ = ppm;
+        rebase();
+    }
+
+    // A new nominal rate. Same rebase, so sample time carries on from where it is.
+    void setNominalRate(Float64 rate)
+    {
+        std::lock_guard lock(writer_);
+        nominalTicksPerPeriod_ = hostPerSecond_ * kPeriodFrames / rate;
+        rebase();
+    }
+
+    double ratePpm() const
+    {
+        std::lock_guard lock(writer_);
+        return ppm_;
+    }
+
+private:
+    // With writer_ held.
+    void rebase()
+    {
         const double oldTicks = ticksPerPeriod_.load();
         const UInt64 oldAnchor = anchorHost_.load();
         const UInt64 oldPeriod = anchorPeriod_.load();
@@ -92,18 +123,11 @@ public:
             anchorHost_.store(UInt64(double(oldAnchor) + double(next) * oldTicks));
             anchorPeriod_.store(oldPeriod + next);
         }
-        ticksPerPeriod_.store(nominalTicksPerPeriod_ / (1.0 + ppm * 1e-6));
+        ticksPerPeriod_.store(nominalTicksPerPeriod_ / (1.0 + ppm_ * 1e-6));
         seq_.fetch_add(1, std::memory_order_acq_rel);
-        ppm_ = ppm;
     }
 
-    double ratePpm() const
-    {
-        std::lock_guard lock(writer_);
-        return ppm_;
-    }
-
-private:
+    double hostPerSecond_ = 0;
     double nominalTicksPerPeriod_ = 0;
     std::atomic<UInt32> seq_{0};
     std::atomic<UInt64> anchorHost_{0};
@@ -138,6 +162,8 @@ inline UInt32 ringIndex(Float64 sampleTime)
     return UInt32(SInt64(sampleTime)) & (kRingFrames - 1);
 }
 
+AudioStreamBasicDescription floatFormat(UInt32 channels, Float64 rate = gRate.load());
+
 class VirtualDevice final : public aspl::Device
 {
 public:
@@ -162,7 +188,49 @@ public:
         NotifyPropertyChanged(kAudioObjectPropertyName);
     }
 
+    // Lists every rate on the device and its streams. Call once its streams are added.
+    void offerRates()
+    {
+        std::vector<AudioValueRange> rates;
+        for (const Float64 r : kRates) {
+            rates.push_back({r, r});
+        }
+        SetAvailableSampleRatesAsync(rates);
+        for (const auto dir : {aspl::Direction::Input, aspl::Direction::Output}) {
+            for (UInt32 i = 0; i < GetStreamCount(dir); ++i) {
+                auto stream = GetStreamByIndex(dir, i);
+                const UInt32 channels = stream->GetPhysicalFormat().mChannelsPerFrame;
+                std::vector<AudioStreamRangedDescription> formats;
+                for (const Float64 r : kRates) {
+                    formats.push_back({floatFormat(channels, r), {r, r}});
+                }
+                stream->SetAvailablePhysicalFormatsAsync(formats);
+                stream->SetAvailableVirtualFormatsAsync(formats);
+            }
+        }
+    }
+
 protected:
+    OSStatus SetNominalSampleRateImpl(Float64 rate) override
+    {
+        const OSStatus status = aspl::Device::SetNominalSampleRateImpl(rate);
+        if (status != kAudioHardwareNoError) {
+            return status;
+        }
+        for (const auto dir : {aspl::Direction::Input, aspl::Direction::Output}) {
+            for (UInt32 i = 0; i < GetStreamCount(dir); ++i) {
+                auto stream = GetStreamByIndex(dir, i);
+                const auto format = floatFormat(stream->GetPhysicalFormat().mChannelsPerFrame, rate);
+                stream->SetPhysicalFormatAsync(format);
+                stream->SetVirtualFormatAsync(format);
+            }
+        }
+        if (gOnRate) {
+            gOnRate(rate);
+        }
+        return kAudioHardwareNoError;
+    }
+
     OSStatus GetZeroTimeStampImpl(UInt32, Float64 *outSampleTime, UInt64 *outHostTime,
         UInt64 *outSeed) override
     {
@@ -264,10 +332,10 @@ public:
     }
 };
 
-AudioStreamBasicDescription floatFormat(UInt32 channels)
+AudioStreamBasicDescription floatFormat(UInt32 channels, Float64 rate)
 {
     AudioStreamBasicDescription f{};
-    f.mSampleRate = kSampleRate;
+    f.mSampleRate = rate;
     f.mFormatID = kAudioFormatLinearPCM;
     f.mFormatFlags = UInt32(kAudioFormatFlagIsFloat) | UInt32(kAudioFormatFlagsNativeEndian)
         | UInt32(kAudioFormatFlagIsPacked);
@@ -287,7 +355,7 @@ aspl::DeviceParameters deviceParams(const std::string &name, const std::string &
     p.Manufacturer = "PatchPrimeMac";
     p.DeviceUID = uid;
     p.ModelUID = "PatchPrimeMac";
-    p.SampleRate = kSampleRate;
+    p.SampleRate = UInt32(gRate.load());
     p.ChannelCount = channels;
     p.ZeroTimeStampPeriod = kPeriodFrames;
     p.ClockDomain = kClockDomain;
@@ -321,6 +389,8 @@ public:
         engine_->AddStreamAsync(in);
         engine_->AddStreamAsync(out);
         engine_->SetIOHandler(std::make_shared<EngineHandler>());
+        engine_->offerRates();
+        gOnRate = [this](Float64 rate) { followRate(rate); };
         engine_->SetIsHidden(true);
         engine_->RegisterCustomProperty(kCommandProperty, *this, &Plugin::lastResult, &Plugin::command);
         engine_->RegisterCustomProperty(kRateProperty, *this, &Plugin::rate, &Plugin::setRate);
@@ -334,6 +404,17 @@ public:
 
     OSStatus OnInitialize() override
     {
+        const auto [rateText, rateFound] = driver_->GetStorage()->ReadString(kRateKey);
+        if (rateFound) {
+            const Float64 saved = std::atof(rateText.c_str());
+            for (const Float64 r : kRates) {
+                if (r == saved && r != gRate.load()) {
+                    gRate.store(r);
+                    sharedClock().setNominalRate(r);
+                    engine_->SetNominalSampleRateAsync(r);
+                }
+            }
+        }
         const auto [text, found] = driver_->GetStorage()->ReadString(kStorageKey);
         if (found) {
             std::lock_guard lock(mutex_);
@@ -365,9 +446,31 @@ private:
         p.Format = floatFormat(2);
         device->AddStreamAsync(p);
         device->SetIOHandler(std::make_shared<SlotHandler>(slot));
+        device->offerRates();
         plugin_->AddDevice(device);
         entries_[slot] = Entry{output, name, device};
         return true;
+    }
+
+    // One device's rate changed: take the clock and every other device with it.
+    void followRate(Float64 rate)
+    {
+        if (gRate.exchange(rate) == rate) {
+            return; // already done; this is another device catching up
+        }
+        sharedClock().setNominalRate(rate);
+        engine_->SetNominalSampleRateAsync(rate);
+        {
+            std::lock_guard lock(mutex_);
+            for (auto &[slot, entry] : entries_) {
+                entry.device->SetNominalSampleRateAsync(rate);
+            }
+        }
+        auto storage = driver_->GetStorage();
+        const std::string text = std::to_string(int(rate));
+        dispatch_async(saveQueue_, ^{
+            storage->WriteString(kRateKey, text);
+        });
     }
 
     // Never write storage from a property call. That call is the system audio service

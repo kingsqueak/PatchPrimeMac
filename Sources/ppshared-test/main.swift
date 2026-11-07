@@ -46,6 +46,24 @@ fine.strips[0].busSends = [Send(to: 0, gain: 1)]
 fine.buses[0].outputSends = [Send(to: 0, gain: 1)]
 check("a good setup has no problems", fine.problems().isEmpty, "\(fine.problems())")
 check("hardware output is off by default", Settings().hardwareOutputEnabled == false)
+check("rate and buffer default to 48 kHz and 128", Settings().sampleRate == 48000 && Settings().bufferFrames == 128)
+var odd = Settings()
+odd.sampleRate = 22050
+odd.bufferFrames = 100
+odd.deviceBuffers["x"] = 2048
+check("a rate or buffer size not on the list is reported", odd.problems().count == 3, "\(odd.problems())")
+var perDevice = Settings()
+perDevice.deviceBuffers["m2"] = 256
+check("a device's own buffer wins", perDevice.buffer(for: "m2") == 256 && perDevice.buffer(for: "other") == 128)
+do {
+    let old = #"{"version":1,"strips":[],"buses":[],"outputs":[],"hardwareOutputEnabled":true,"hardwareLimit":0.5,"savedRates":{"m2":-18}}"#
+    let loaded = try JSONDecoder().decode(Settings.self, from: Data(old.utf8))
+    check("an older settings file loads, with defaults for the new settings",
+        loaded.hardwareOutputEnabled && loaded.savedRates["m2"] == -18 && loaded.sampleRate == 48000
+            && loaded.bufferFrames == 128 && loaded.keepOwnRate.isEmpty)
+} catch {
+    check("an older settings file loads", false, "\(error)")
+}
 
 // Store.
 let folder = FileManager.default.temporaryDirectory.appendingPathComponent("ppshared-\(UUID().uuidString)")

@@ -11,6 +11,11 @@
 //  - A saved rate for the device means a lock within seconds.
 //  - After a gap (sleep, a device hiccup) the ring is stale: start again.
 //  - Neither side ever waits. If a ring runs dry or fills up, only this path suffers.
+//
+// The two sides may run at different nominal rates (a 48 kHz device into a 96 kHz
+// engine). The ring holds producer frames; each consumer frame steps through it by
+// producerRate / consumerRate, trimmed by the rate controller. Going down in rate
+// the filter's cutoff drops with it and the filter grows longer, so nothing aliases.
 
 #pragma once
 
@@ -24,8 +29,10 @@ namespace pp {
 class Bridge
 {
 public:
-    // Block sizes in frames. The delay target follows from them.
-    Bridge(double sampleRate, int producerBlock, int consumerBlock, double savedPpm);
+    // Rates in Hz and block sizes in frames, each on its own side. The delay target
+    // follows from them.
+    Bridge(double producerRate, double consumerRate, int producerBlock, int consumerBlock,
+        double savedPpm);
 
     // Producer thread. `seconds` is the host time of this block's cycle.
     void write(const float *left, const float *right, int frames, double seconds) noexcept;
@@ -42,7 +49,7 @@ public:
     bool locked() const { return started_.load(std::memory_order_relaxed); }
 
 private:
-    static constexpr int kTaps = 32;
+    static constexpr int kBaseTaps = 32;
     static constexpr int kPhases = 256;
     static constexpr size_t kRingFrames = 1 << 16;
 
@@ -51,7 +58,10 @@ private:
     double control(double position, double blockSeconds) noexcept;
     int resample(float *left, float *right, int frames, double ratio) noexcept;
 
-    double rate_;
+    double producerRate_;
+    double consumerRate_;
+    double step_; // producer frames per consumer frame, before trimming
+    int taps_;
     double target_;
     double savedPpm_;
 

@@ -181,3 +181,75 @@ public func setDriverRate(ppm: Double) {
     var value = String(format: "%.4f", ppm) as CFString
     AudioObjectSetPropertyData(engine, &address, 0, nil, UInt32(MemoryLayout<CFString>.size), &value)
 }
+
+// MARK: Rates and buffer sizes
+
+public func nominalRate(_ id: AudioObjectID) -> Double {
+    var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyNominalSampleRate,
+        mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    var rate = 0.0
+    var size = UInt32(MemoryLayout<Double>.size)
+    AudioObjectGetPropertyData(id, &address, 0, nil, &size, &rate)
+    return rate
+}
+
+/// The rates a device offers. Ranges count if the rate falls inside one.
+public func supportsRate(_ id: AudioObjectID, _ rate: Double) -> Bool {
+    var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyAvailableNominalSampleRates,
+        mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    var size: UInt32 = 0
+    guard AudioObjectGetPropertyDataSize(id, &address, 0, nil, &size) == noErr, size > 0 else { return false }
+    var ranges = [AudioValueRange](repeating: AudioValueRange(), count: Int(size) / MemoryLayout<AudioValueRange>.size)
+    guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, &ranges) == noErr else { return false }
+    return ranges.contains { rate >= $0.mMinimum - 0.5 && rate <= $0.mMaximum + 0.5 }
+}
+
+/// Asks for a new rate and waits up to `timeout` for the device to report it, since a
+/// device changes rate in its own time. Returns whether it got there.
+@discardableResult
+public func setNominalRate(_ id: AudioObjectID, _ rate: Double, timeout: TimeInterval = 3) -> Bool {
+    if abs(nominalRate(id) - rate) < 0.5 { return true }
+    var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyNominalSampleRate,
+        mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    var value = rate
+    guard AudioObjectSetPropertyData(id, &address, 0, nil, UInt32(MemoryLayout<Double>.size), &value) == noErr
+    else { return false }
+    let end = Date().addingTimeInterval(timeout)
+    while Date() < end {
+        if abs(nominalRate(id) - rate) < 0.5 { return true }
+        usleep(20_000)
+    }
+    return false
+}
+
+public func bufferFrames(_ id: AudioObjectID) -> Int {
+    var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyBufferFrameSize,
+        mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    var frames: UInt32 = 0
+    var size = UInt32(MemoryLayout<UInt32>.size)
+    AudioObjectGetPropertyData(id, &address, 0, nil, &size, &frames)
+    return Int(frames)
+}
+
+/// The buffer sizes a device allows, as a range.
+public func bufferRange(_ id: AudioObjectID) -> ClosedRange<Int>? {
+    var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyBufferFrameSizeRange,
+        mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    var range = AudioValueRange()
+    var size = UInt32(MemoryLayout<AudioValueRange>.size)
+    guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, &range) == noErr else { return nil }
+    return Int(range.mMinimum)...Int(range.mMaximum)
+}
+
+/// Sets this process's buffer size on a device, clamped to what it allows, and
+/// returns what it got. It applies to this process only; other apps keep theirs.
+@discardableResult
+public func setBufferFrames(_ id: AudioObjectID, _ frames: Int) -> Int {
+    var wanted = frames
+    if let range = bufferRange(id) { wanted = min(max(frames, range.lowerBound), range.upperBound) }
+    var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyBufferFrameSize,
+        mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    var value = UInt32(wanted)
+    AudioObjectSetPropertyData(id, &address, 0, nil, UInt32(MemoryLayout<UInt32>.size), &value)
+    return bufferFrames(id)
+}

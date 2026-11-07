@@ -213,6 +213,8 @@ struct SetupView: View {
     @State private var outDevice = ""
     @State private var virtualName = ""
     @State private var virtualOutput = true
+    // A rate or buffer change restarts the engine, so it's confirmed first.
+    @State private var pending: (words: [String], what: String)?
 
     var body: some View {
         let snap = model.snapshot
@@ -226,6 +228,7 @@ struct SetupView: View {
                 }
                 Text(snap.clockText).font(.caption).foregroundStyle(.secondary)
             }
+            AudioSection(snap: snap) { words, what in pending = (words, what) }
             Section("Add an input") {
                 TextField("Label", text: $name)
                 Picker("Device", selection: $stripDevice) {
@@ -288,6 +291,103 @@ struct SetupView: View {
             }
         }
         .formStyle(.grouped)
+        .confirmationDialog(pending?.what ?? "", isPresented: Binding(
+            get: { pending != nil }, set: { if !$0 { pending = nil } })) {
+            Button("Restart the Engine") {
+                if let words = pending?.words { model.send(words) }
+                pending = nil
+            }
+            Button("Cancel", role: .cancel) { pending = nil }
+        } message: {
+            Text("All audio through PatchPrimeMac stops for a moment while the engine restarts and every device locks again. Turn speakers down first if you're unsure.")
+        }
+    }
+}
+
+/// Sample rate and buffer sizes: the engine's, and each device's.
+struct AudioSection: View {
+    let snap: Snapshot
+    let ask: ([String], String) -> Void
+
+    static func khz(_ rate: Double) -> String {
+        rate.truncatingRemainder(dividingBy: 1000) == 0 ? "\(Int(rate / 1000)) kHz" : String(format: "%.1f kHz", rate / 1000)
+    }
+
+    static func ms(_ frames: Int, _ rate: Double) -> String {
+        rate > 0 ? String(format: "%.1f ms", Double(frames) / rate * 1000) : ""
+    }
+
+    var body: some View {
+        let s = snap.settings
+        Section {
+            Picker("Sample rate", selection: Binding(
+                get: { s.sampleRate },
+                set: { if $0 != s.sampleRate { ask(["rate", "\(Int($0))"], "Change the sample rate to \(Self.khz($0))?") } })) {
+                ForEach(PPShared.Settings.rates, id: \.self) { Text(Self.khz($0)).tag($0) }
+            }
+            Picker("Buffer size", selection: Binding(
+                get: { s.bufferFrames },
+                set: { if $0 != s.bufferFrames { ask(["buffer", "\($0)"], "Change the buffer size to \($0) frames?") } })) {
+                ForEach(PPShared.Settings.buffers, id: \.self) { Text("\($0) frames (\(Self.ms($0, s.sampleRate)))").tag($0) }
+            }
+            if snap.engineRate > 0, snap.engineRate != s.sampleRate || snap.engineBlock != s.bufferFrames {
+                Text("Running at \(Self.khz(snap.engineRate)), \(snap.engineBlock) frames.")
+                    .font(.caption).foregroundStyle(.orange)
+            }
+            ForEach(snap.devices.filter { $0.buffer > 0 }) { d in
+                DeviceAudioRow(device: d, settings: s, ask: ask)
+            }
+        } header: {
+            Text("Audio")
+        } footer: {
+            Text("The virtual devices always run at the engine's rate. Hardware follows it if it can; otherwise it's resampled. Smaller buffers mean less delay and more work for the Mac.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
+struct DeviceAudioRow: View {
+    let device: DeviceRow
+    let settings: PPShared.Settings
+    let ask: ([String], String) -> Void
+
+    var body: some View {
+        let keeps = settings.keepOwnRate.contains(device.uid)
+        let resampled = abs(device.rate - settings.sampleRate) > 0.5
+        let own = settings.deviceBuffers[device.uid]
+        let choices = PPShared.Settings.buffers.filter {
+            device.bufferMax == 0 || ($0 >= device.bufferMin && $0 <= device.bufferMax)
+        }
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(device.name).bold()
+                Spacer()
+                Text("\(AudioSection.khz(device.rate))\(resampled ? ", resampled" : ""), \(device.buffer) frames (\(AudioSection.ms(device.buffer, device.rate)))")
+                    .font(.caption).foregroundStyle(resampled ? .orange : .secondary)
+            }
+            HStack {
+                Toggle("Keep its own rate", isOn: Binding(
+                    get: { keeps },
+                    set: { ask(["device-rate", device.name, $0 ? "own" : "follow"],
+                        $0 ? "Leave \(device.name) at its own rate?" : "Run \(device.name) at the engine's rate?") }))
+                    .disabled(!keeps && !device.rates.contains(settings.sampleRate))
+                Spacer()
+                Picker("Buffer", selection: Binding(
+                    get: { own ?? 0 },
+                    set: { value in
+                        ask(["device-buffer", device.name, value == 0 ? "default" : "\(value)"],
+                            value == 0 ? "Give \(device.name) the engine's buffer size?" : "Give \(device.name) \(value)-frame buffers?")
+                    })) {
+                    Text("Same as engine (\(settings.bufferFrames))").tag(0)
+                    ForEach(choices, id: \.self) { Text("\($0) frames").tag($0) }
+                }
+                .frame(maxWidth: 260)
+            }
+            if !device.rates.contains(settings.sampleRate) {
+                Text("\(device.name) can't run at \(AudioSection.khz(settings.sampleRate)), so it's resampled.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
     }
 }
 

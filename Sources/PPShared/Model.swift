@@ -120,8 +120,47 @@ public struct Settings: Codable, Equatable, Sendable {
     public var savedRates: [String: Double] = [:]
     /// The device whose clock to follow. None means the Patch Prime clock.
     public var clockDevice: DeviceSignature?
+    /// The engine's rate, which the virtual devices share, and its block size.
+    /// Hardware follows both unless one of the two settings below says otherwise.
+    public var sampleRate: Double = 48000
+    public var bufferFrames = 128
+    /// A device's own buffer size, by UID, instead of bufferFrames.
+    public var deviceBuffers: [String: Int] = [:]
+    /// Devices left at their own rate and resampled, by UID. A device that can't do
+    /// the engine's rate is resampled anyway.
+    public var keepOwnRate: Set<String> = []
+
+    public static let rates: [Double] = [44100, 48000, 96000, 192000]
+    public static let buffers = [32, 64, 128, 256, 512, 1024]
 
     public init() {}
+
+    enum CodingKeys: String, CodingKey {
+        case version, strips, buses, outputs, hardwareOutputEnabled, hardwareLimit, savedRates,
+            clockDevice, sampleRate, bufferFrames, deviceBuffers, keepOwnRate
+    }
+
+    // By hand, so a settings file from an older version loads with defaults for what
+    // it doesn't have, instead of being set aside as unreadable.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = Settings()
+        version = try c.decodeIfPresent(Int.self, forKey: .version) ?? d.version
+        strips = try c.decodeIfPresent([Strip].self, forKey: .strips) ?? d.strips
+        buses = try c.decodeIfPresent([Bus].self, forKey: .buses) ?? d.buses
+        outputs = try c.decodeIfPresent([Output].self, forKey: .outputs) ?? d.outputs
+        hardwareOutputEnabled = try c.decodeIfPresent(Bool.self, forKey: .hardwareOutputEnabled) ?? d.hardwareOutputEnabled
+        hardwareLimit = try c.decodeIfPresent(Float.self, forKey: .hardwareLimit) ?? d.hardwareLimit
+        savedRates = try c.decodeIfPresent([String: Double].self, forKey: .savedRates) ?? d.savedRates
+        clockDevice = try c.decodeIfPresent(DeviceSignature.self, forKey: .clockDevice)
+        sampleRate = try c.decodeIfPresent(Double.self, forKey: .sampleRate) ?? d.sampleRate
+        bufferFrames = try c.decodeIfPresent(Int.self, forKey: .bufferFrames) ?? d.bufferFrames
+        deviceBuffers = try c.decodeIfPresent([String: Int].self, forKey: .deviceBuffers) ?? d.deviceBuffers
+        keepOwnRate = try c.decodeIfPresent(Set<String>.self, forKey: .keepOwnRate) ?? d.keepOwnRate
+    }
+
+    /// The buffer size to ask of a device.
+    public func buffer(for uid: String) -> Int { deviceBuffers[uid] ?? bufferFrames }
 
     /// A setup that would misbehave is refused, with the reason, rather than stored.
     /// CASTER's M2 tracks lost their channels and went silent with no word why.
@@ -155,6 +194,15 @@ public struct Settings: Codable, Equatable, Sendable {
         }
         for o in outputs {
             endpoint(o.sink, "output \"\(o.label)\"")
+        }
+        if !Settings.rates.contains(sampleRate) {
+            found.append("sample rate \(sampleRate) isn't one of 44100, 48000, 96000 or 192000")
+        }
+        if !Settings.buffers.contains(bufferFrames) {
+            found.append("buffer size \(bufferFrames) isn't one of 32, 64, 128, 256, 512 or 1024")
+        }
+        for (uid, frames) in deviceBuffers where !Settings.buffers.contains(frames) {
+            found.append("buffer size \(frames) for \(uid) isn't one of 32, 64, 128, 256, 512 or 1024")
         }
         return found
     }

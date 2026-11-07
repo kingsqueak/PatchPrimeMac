@@ -15,6 +15,7 @@
 #include <CoreAudio/CoreAudio.h>
 #include <mach/mach_time.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -27,7 +28,6 @@
 
 namespace {
 
-constexpr int kEngineBlock = 128;
 constexpr int kDriverChannels = 32;
 constexpr int kDriverSlots = kDriverChannels / 2;
 constexpr int kRoutesPerDevice = 16;
@@ -61,8 +61,9 @@ struct Route
     int left;
     int right;
 
-    Route(double rate, int producer, int consumer, double ppm, int l, int r)
-        : bridge(rate, producer, consumer, ppm)
+    Route(double producerRate, double consumerRate, int producer, int consumer, double ppm, int l,
+        int r)
+        : bridge(producerRate, consumerRate, producer, consumer, ppm)
         , left(l)
         , right(r)
     {
@@ -77,6 +78,7 @@ struct PPDevice
     AudioObjectID id = kAudioObjectUnknown;
     AudioDeviceIOProcID proc = nullptr;
     UInt32 block = 512;
+    double rate = 48000;
     std::array<std::atomic<Route *>, kRoutesPerDevice> inputs{};
     std::array<std::atomic<Route *>, kRoutesPerDevice> outputs{};
     std::atomic<uint64_t> cycles{0};
@@ -91,6 +93,7 @@ struct PPEngine
 {
     PPMixer *mixer = nullptr;
     double rate = 48000;
+    int block = 128;
     double secPerTick = secondsPerTick();
     AudioObjectID hidden = kAudioObjectUnknown;
     AudioDeviceIOProcID proc = nullptr;
@@ -238,6 +241,16 @@ OSStatus engineProc(AudioObjectID, const AudioTimeStamp *now, const AudioBufferL
     return noErr;
 }
 
+double deviceRate(AudioObjectID id)
+{
+    AudioObjectPropertyAddress a{kAudioDevicePropertyNominalSampleRate,
+        kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+    Float64 value = 48000;
+    UInt32 size = sizeof value;
+    AudioObjectGetPropertyData(id, &a, 0, nullptr, &size, &value);
+    return value;
+}
+
 UInt32 deviceBlock(AudioObjectID id)
 {
     AudioObjectPropertyAddress a{kAudioDevicePropertyBufferFrameSize,
@@ -260,6 +273,7 @@ PPDevice *PPEngine::deviceFor(AudioObjectID id)
     device->engine = this;
     device->id = id;
     device->block = deviceBlock(id);
+    device->rate = deviceRate(id);
     if (AudioDeviceCreateIOProcID(id, deviceProc, device.get(), &device->proc) != noErr) {
         return nullptr;
     }
@@ -310,11 +324,12 @@ void PPEngine::stopDeviceIfIdle(PPDevice *d)
 
 extern "C" {
 
-PPEngine *pp_engine_create(unsigned int hiddenDevice, double sampleRate)
+PPEngine *pp_engine_create(unsigned int hiddenDevice, double sampleRate, int block)
 {
     auto *e = new PPEngine;
     e->mixer = pp_mixer_create(sampleRate);
     e->rate = sampleRate;
+    e->block = std::max(16, std::min(int(PP_MAX_BLOCK), block));
     e->hidden = hiddenDevice;
     for (auto &s : e->inputSlot) {
         s.store(-1);
@@ -329,7 +344,7 @@ PPMixer *pp_engine_mixer(PPEngine *e) { return e->mixer; }
 
 int pp_engine_start(PPEngine *e)
 {
-    UInt32 block = kEngineBlock;
+    UInt32 block = UInt32(e->block);
     AudioObjectPropertyAddress a{kAudioDevicePropertyBufferFrameSize,
         kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
     AudioObjectSetPropertyData(e->hidden, &a, 0, nullptr, sizeof block, &block);
@@ -378,7 +393,7 @@ int pp_engine_bind_input_device(PPEngine *e, int input, unsigned int device, int
     if (slot < 0) {
         return -2;
     }
-    auto *r = new Route(e->rate, int(d->block), kEngineBlock, savedPpm, left, right);
+    auto *r = new Route(d->rate, e->rate, int(d->block), e->block, savedPpm, left, right);
     d->inputs[size_t(slot)].store(r, std::memory_order_release);
     e->inputBridge[size_t(input)].store(r, std::memory_order_release);
     return 0;
@@ -396,7 +411,7 @@ int pp_engine_bind_output_device(PPEngine *e, int output, unsigned int device, i
     if (slot < 0) {
         return -2;
     }
-    auto *r = new Route(e->rate, kEngineBlock, int(d->block), savedPpm, left, right);
+    auto *r = new Route(e->rate, d->rate, e->block, int(d->block), savedPpm, left, right);
     d->outputs[size_t(slot)].store(r, std::memory_order_release);
     e->outputBridge[size_t(output)].store(r, std::memory_order_release);
     return 0;

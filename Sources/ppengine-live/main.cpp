@@ -128,7 +128,7 @@ int main()
         kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
     AudioObjectSetPropertyData(mic, &bf, 0, nullptr, sizeof buffer, &buffer);
 
-    PPEngine *e = pp_engine_create(hidden, 48000);
+    PPEngine *e = pp_engine_create(hidden, 48000, 128);
     PPMixer *m = pp_engine_mixer(e);
 
     // Mic 1 on strip 0, mic 2 on strip 1, both into bus 0, bus 0 to the virtual mic.

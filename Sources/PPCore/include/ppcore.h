@@ -74,7 +74,10 @@ typedef struct PPEngineStats {
     int devices;
 } PPEngineStats;
 
-PPEngine *pp_engine_create(unsigned int hiddenDevice, double sampleRate);
+// The engine runs at `sampleRate` in blocks of `block` frames, on the hidden device.
+// To change either, destroy it and create another. Each hardware device keeps its
+// own rate and buffer, read when it's first opened; set them before binding.
+PPEngine *pp_engine_create(unsigned int hiddenDevice, double sampleRate, int block);
 void pp_engine_destroy(PPEngine *e);
 PPMixer *pp_engine_mixer(PPEngine *e);
 int pp_engine_start(PPEngine *e);
@@ -96,7 +99,8 @@ int pp_shm_open(const char *name, int flags, int mode);
 
 // The clock bridge, exposed for the offline tests.
 typedef struct PPBridge PPBridge;
-PPBridge *pp_bridge_create(double rate, int producerBlock, int consumerBlock, double savedPpm);
+PPBridge *pp_bridge_create(double producerRate, double consumerRate, int producerBlock,
+    int consumerBlock, double savedPpm);
 void pp_bridge_destroy(PPBridge *b);
 void pp_bridge_write(PPBridge *b, const float *left, const float *right, int frames, double seconds);
 void pp_bridge_read(PPBridge *b, float *left, float *right, int frames, double seconds);

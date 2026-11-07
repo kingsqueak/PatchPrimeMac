@@ -12,6 +12,13 @@ public struct DeviceRow: Codable, Sendable, Identifiable, Hashable {
     public var transport: String
     public var inputs: Int
     public var outputs: Int
+    /// Its rate now, and which of PatchPrimeMac's rates it can run at.
+    public var rate: Double = 0
+    public var rates: [Double] = []
+    /// The buffer sizes it allows, and the one the engine is using (0 if not open).
+    public var bufferMin = 0
+    public var bufferMax = 0
+    public var buffer = 0
 
     public init(uid: String, name: String, transport: String, inputs: Int, outputs: Int) {
         self.uid = uid
@@ -51,6 +58,10 @@ public struct Snapshot: Codable, Sendable, Equatable {
     public var underruns: UInt64 = 0
     public var overruns: UInt64 = 0
     public var relocks: UInt64 = 0
+    /// The engine's rate and block as running, which can differ from the settings
+    /// for a moment while it restarts.
+    public var engineRate: Double = 0
+    public var engineBlock = 0
 
     public init() {}
 }

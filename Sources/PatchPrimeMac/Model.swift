@@ -177,8 +177,18 @@ extension Snapshot {
         s.silent = ["PR30"]
         s.defaultOutput = "M2"
         s.defaultInput = "M2"
-        s.devices = [DeviceRow(uid: "m2", name: "M2", transport: "USB", inputs: 2, outputs: 2),
-            DeviceRow(uid: "sp", name: "Mac Studio Speakers", transport: "Built-in", inputs: 0, outputs: 2)]
+        var m2Row = DeviceRow(uid: "m2", name: "M2", transport: "USB", inputs: 2, outputs: 2)
+        m2Row.rate = 48000
+        m2Row.rates = PPShared.Settings.rates
+        m2Row.bufferMin = 16
+        m2Row.bufferMax = 2048
+        m2Row.buffer = 128
+        var speakers = DeviceRow(uid: "sp", name: "Mac Studio Speakers", transport: "Built-in", inputs: 0, outputs: 2)
+        speakers.rate = 48000
+        speakers.rates = [44100, 48000, 96000]
+        s.devices = [m2Row, speakers]
+        s.engineRate = 48000
+        s.engineBlock = 128
         s.virtuals = [VirtualRow(slot: 0, isOutput: true, name: "Desktop"), VirtualRow(slot: 1, isOutput: false, name: "Stream Mic")]
         return s
     }

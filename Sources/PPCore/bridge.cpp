@@ -28,38 +28,43 @@ double besselI0(double x)
 }
 } // namespace
 
-Bridge::Bridge(double sampleRate, int producerBlock, int consumerBlock, double savedPpm)
-    : rate_(sampleRate)
-    , target_(2.0 * producerBlock + consumerBlock + kTaps)
+Bridge::Bridge(double producerRate, double consumerRate, int producerBlock, int consumerBlock,
+    double savedPpm)
+    : producerRate_(producerRate)
+    , consumerRate_(consumerRate)
+    , step_(producerRate / consumerRate)
+    , taps_(kBaseTaps * std::max(1, int(std::ceil(producerRate / consumerRate - 1e-9))))
+    , target_(2.0 * producerBlock + consumerBlock * (producerRate / consumerRate) + taps_)
     , savedPpm_(savedPpm)
-    , table_(size_t(kTaps) * size_t(kPhases + 1))
+    , table_(size_t(taps_) * size_t(kPhases + 1))
     , ringL_(kRingFrames)
     , ringR_(kRingFrames)
 {
-    // Windowed sinc, flat at DC at every phase.
+    // Windowed sinc, flat at DC at every phase. Going down in rate, the cutoff is
+    // scaled to the lower rate's band, measured in producer samples.
     constexpr double kBeta = 9.0;
-    constexpr double kCutoff = 0.92;
-    const int half = kTaps / 2;
+    const double cutoff = 0.92 / std::max(1.0, step_);
+    const int half = taps_ / 2;
     for (int p = 0; p <= kPhases; ++p) {
         const double frac = double(p) / kPhases;
         double sum = 0;
-        std::vector<double> row(kTaps);
-        for (int t = 0; t < kTaps; ++t) {
+        std::vector<double> row(static_cast<size_t>(taps_));
+        for (int t = 0; t < taps_; ++t) {
             const double x = double(t - half + 1) - frac;
             const double sinc = std::abs(x) < 1e-12
                 ? 1.0
-                : std::sin(M_PI * kCutoff * x) / (M_PI * kCutoff * x);
+                : std::sin(M_PI * cutoff * x) / (M_PI * cutoff * x);
             const double r = x / half;
             const double window
                 = std::abs(r) >= 1 ? 0 : besselI0(kBeta * std::sqrt(1 - r * r)) / besselI0(kBeta);
-            row[size_t(t)] = kCutoff * sinc * window;
+            row[size_t(t)] = cutoff * sinc * window;
             sum += row[size_t(t)];
         }
-        for (int t = 0; t < kTaps; ++t) {
-            table_[size_t(p) * kTaps + size_t(t)] = float(row[size_t(t)] / sum);
+        for (int t = 0; t < taps_; ++t) {
+            table_[size_t(p) * size_t(taps_) + size_t(t)] = float(row[size_t(t)] / sum);
         }
     }
-    alpha_ = double(consumerBlock) / sampleRate / 2.0; // a 2 s average of position
+    alpha_ = double(consumerBlock) / consumerRate / 2.0; // a 2 s average of position
 }
 
 size_t Bridge::fill() const
@@ -95,7 +100,7 @@ void Bridge::lock(double position) noexcept
 double Bridge::control(double position, double blockSeconds) noexcept
 {
     filtered_ += alpha_ * (position - filtered_);
-    const double error = (filtered_ - lockedTarget_) / rate_;
+    const double error = (filtered_ - lockedTarget_) / producerRate_;
     integral_ += error * blockSeconds;
     const double trim = kP * error + kI * integral_;
     if (std::abs(trim) >= kLimit) {
@@ -112,16 +117,16 @@ int Bridge::resample(float *left, float *right, int frames, double ratio) noexce
     int made = 0;
     const size_t mask = kRingFrames - 1;
     for (; made < frames; ++made) {
-        if (available - used < size_t(kTaps) + 1) {
+        if (available - used < size_t(taps_) + 1) {
             break;
         }
         const double position = frac_ * kPhases;
         const int p = int(position);
         const float mix = float(position - p);
-        const float *a = &table_[size_t(p) * kTaps];
-        const float *b = a + kTaps;
+        const float *a = &table_[size_t(p) * size_t(taps_)];
+        const float *b = a + taps_;
         float l0 = 0, l1 = 0, r0 = 0, r1 = 0;
-        for (int t = 0; t < kTaps; ++t) {
+        for (int t = 0; t < taps_; ++t) {
             const size_t at = (r + used + size_t(t)) & mask;
             const float x = ringL_[at];
             const float y = ringR_[at];
@@ -132,7 +137,7 @@ int Bridge::resample(float *left, float *right, int frames, double ratio) noexce
         }
         left[made] = l0 + (l1 - l0) * mix;
         right[made] = r0 + (r1 - r0) * mix;
-        frac_ += ratio;
+        frac_ += ratio * step_;
         const int whole = int(frac_);
         frac_ -= whole;
         used += size_t(whole);
@@ -168,7 +173,7 @@ void Bridge::read(float *left, float *right, int frames, double seconds) noexcep
         silence(0);
         return;
     }
-    const double since = (seconds - producer) * rate_;
+    const double since = (seconds - producer) * producerRate_;
     const double level = double(fill());
     if (!started) {
         if (level < target_) {
@@ -180,15 +185,18 @@ void Bridge::read(float *left, float *right, int frames, double seconds) noexcep
         lock(target_ + since);
         started_.store(true, std::memory_order_relaxed);
     }
-    if (fill() < size_t(frames) + size_t(kTaps) + 2) {
+    if (double(fill()) < frames * step_ + taps_ + 2) {
         // Dry. The rate means nothing while the ring is empty, and a controller fed
         // this position winds up, so stop steering until audio returns.
         underruns_.fetch_add(1, std::memory_order_relaxed);
         silence(0);
         return;
     }
-    const double position = double(fill()) + since;
-    const double ratio = control(position, frames / rate_);
+    // Where reading really is: the resampler sits frac_ of a frame past read_. Leaving
+    // it out makes position step by a whole frame whenever the ratio isn't whole
+    // (44.1 to 48 kHz), and the controller wobbles with it.
+    const double position = double(fill()) - frac_ + since;
+    const double ratio = control(position, frames / consumerRate_);
     const int made = resample(left, right, frames, ratio);
     if (made < frames) {
         underruns_.fetch_add(1, std::memory_order_relaxed);
@@ -208,9 +216,10 @@ struct PPBridge
     pp::Bridge b;
 };
 
-PPBridge *pp_bridge_create(double rate, int producerBlock, int consumerBlock, double savedPpm)
+PPBridge *pp_bridge_create(double producerRate, double consumerRate, int producerBlock,
+    int consumerBlock, double savedPpm)
 {
-    return new PPBridge{pp::Bridge(rate, producerBlock, consumerBlock, savedPpm)};
+    return new PPBridge{pp::Bridge(producerRate, consumerRate, producerBlock, consumerBlock, savedPpm)};
 }
 void pp_bridge_destroy(PPBridge *b) { delete b; }
 void pp_bridge_write(PPBridge *b, const float *l, const float *r, int frames, double seconds)

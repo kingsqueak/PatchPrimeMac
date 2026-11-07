@@ -166,23 +166,31 @@ struct BridgeRun {
 }
 
 func simulate(ppm: Double, producerBlock: Int, consumerBlock: Int, saved: Double, seconds: Double,
-    consumerGap: ClosedRange<Double>? = nil, producerGap: ClosedRange<Double>? = nil) -> BridgeRun {
-    let rate = 48000.0
-    let b = pp_bridge_create(rate, Int32(producerBlock), Int32(consumerBlock), saved)!
+    consumerGap: ClosedRange<Double>? = nil, producerGap: ClosedRange<Double>? = nil,
+    producerRate: Double = 48000, consumerRate: Double = 48000, tone: Double = 0,
+    capture: UnsafeMutablePointer<[Float]>? = nil, steady: Bool = false) -> BridgeRun {
+    let b = pp_bridge_create(producerRate, consumerRate, Int32(producerBlock), Int32(consumerBlock), saved)!
     var generator = SystemRandomNumberGenerator()
     let jitter = { (g: inout SystemRandomNumberGenerator) -> Double in
-        Double.random(in: -60e-6...60e-6, using: &g)
+        steady ? 0 : Double.random(in: -60e-6...60e-6, using: &g)
     }
-    let inLeft = [Float](repeating: 0.25, count: producerBlock)
+    var inLeft = [Float](repeating: 0.25, count: producerBlock)
+    var phase = 0.0
     var outLeft = [Float](repeating: 0, count: consumerBlock)
     var outRight = outLeft
     var nextProducer = 0.0
     var nextConsumer = 0.0
-    let producerStep = Double(producerBlock) / (rate * (1 + ppm * 1e-6))
-    let consumerStep = Double(consumerBlock) / rate
+    let producerStep = Double(producerBlock) / (producerRate * (1 + ppm * 1e-6))
+    let consumerStep = Double(consumerBlock) / consumerRate
     var run = BridgeRun()
     while nextProducer < seconds || nextConsumer < seconds {
         if nextProducer <= nextConsumer {
+            if tone > 0 {
+                for i in 0..<producerBlock {
+                    inLeft[i] = Float(0.5 * sin(phase))
+                    phase += 2 * Double.pi * tone / producerRate
+                }
+            }
             if producerGap?.contains(nextProducer) != true {
                 pp_bridge_write(b, inLeft, inLeft, Int32(producerBlock), nextProducer + jitter(&generator))
             }
@@ -193,7 +201,10 @@ func simulate(ppm: Double, producerBlock: Int, consumerBlock: Int, saved: Double
                 if let gap = producerGap, nextConsumer > gap.lowerBound + 0.3, nextConsumer < gap.upperBound {
                     run.staleFrames += outLeft.filter { $0 != 0 }.count
                 }
-                if nextConsumer > seconds - 0.5 { run.peakAfterGap = max(run.peakAfterGap, outLeft.max() ?? 0) }
+                if nextConsumer > seconds - 0.5 {
+                    run.peakAfterGap = max(run.peakAfterGap, outLeft.max() ?? 0)
+                    capture?.pointee.append(contentsOf: outLeft)
+                }
             }
             nextConsumer += consumerStep
         }
@@ -221,6 +232,93 @@ do {
     check("bridge goes silent, not stale, when the device stalls", stall.staleFrames == 0, "\(stall)")
     check("and comes back", stall.peakAfterGap > 0.2, "\(stall.peakAfterGap)")
     check("with its rate intact", abs(stall.ratio - 20) < 2, "\(stall.ratio)")
+}
+
+// Quality across rates. A tone at `tone` Hz goes through; fit it out of the last half
+// second and report what's left, in dB below the tone. For a tone above the lower
+// rate's band, everything that comes out is alias, reported in dB below the input.
+func residualDB(_ x: [Float], tone: Double, rate: Double) -> Double {
+    var a = [[Double]](repeating: [0, 0, 0], count: 3)
+    var y = [0.0, 0.0, 0.0]
+    for (n, v) in x.enumerated() {
+        let w = 2 * Double.pi * tone * Double(n) / rate
+        let basis = [sin(w), cos(w), 1]
+        for i in 0..<3 {
+            y[i] += basis[i] * Double(v)
+            for j in 0..<3 { a[i][j] += basis[i] * basis[j] }
+        }
+    }
+    // Solve the 3x3 by Cramer's rule.
+    func det(_ m: [[Double]]) -> Double {
+        m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+    }
+    let d = det(a)
+    var c = [0.0, 0.0, 0.0]
+    for k in 0..<3 {
+        var m = a
+        for i in 0..<3 { m[i][k] = y[i] }
+        c[k] = det(m) / d
+    }
+    var err = 0.0, sig = 0.0
+    for (n, v) in x.enumerated() {
+        let w = 2 * Double.pi * tone * Double(n) / rate
+        let fit = c[0] * sin(w) + c[1] * cos(w) + c[2]
+        err += (Double(v) - fit) * (Double(v) - fit)
+        sig += fit * fit
+    }
+    return 10 * log10(max(err, 1e-30) / max(sig, 1e-30))
+}
+
+/// The same, with the tone's frequency searched within ±30 ppm: the rate controller
+/// is allowed to sit a fraction of a ppm off while it settles, which is no distortion.
+func bestResidualDB(_ x: [Float], tone: Double, rate: Double) -> Double {
+    func at(_ ppm: Double) -> Double { residualDB(x, tone: tone * (1 + ppm * 1e-6), rate: rate) }
+    var centre = stride(from: -30.0, through: 30, by: 1).min { at($0) < at($1) } ?? 0
+    for step in [0.1, 0.01, 0.001] {
+        centre = stride(from: centre - 10 * step, through: centre + 10 * step, by: step).min { at($0) < at($1) } ?? centre
+    }
+    return at(centre)
+}
+
+func rmsDB(_ x: [Float], below amplitude: Double) -> Double {
+    let rms = sqrt(x.reduce(0.0) { $0 + Double($1) * Double($1) } / Double(max(1, x.count)))
+    return 20 * log10(max(rms, 1e-12) / (amplitude / sqrt(2)))
+}
+
+do {
+    let pairs: [(Double, Double, Int, Int)] = [
+        (48000, 48000, 512, 128), (48000, 96000, 512, 256), (96000, 48000, 256, 128),
+        (192000, 48000, 1024, 128), (44100, 48000, 512, 128), (48000, 44100, 128, 512),
+        (48000, 192000, 128, 1024),
+    ]
+    var sameRate = 0.0
+    for (p, c, pb, cb) in pairs {
+        // The filter alone: steady clocks, no drift.
+        var out: [Float] = []
+        _ = simulate(ppm: 0, producerBlock: pb, consumerBlock: cb, saved: 0, seconds: 10,
+            producerRate: p, consumerRate: c, tone: 1000, capture: &out, steady: true)
+        let filter = bestResidualDB(out, tone: 1000, rate: c)
+        // Real life: drift and timestamp jitter, so the controller's wander shows too.
+        var real: [Float] = []
+        let run = simulate(ppm: -18, producerBlock: pb, consumerBlock: cb, saved: -18, seconds: 30,
+            producerRate: p, consumerRate: c, tone: 1000, capture: &real)
+        let wander = bestResidualDB(real, tone: 1000 * (1 - 18e-6), rate: c)
+        if p == c { sameRate = wander }
+        check(String(format: "bridge %.1f to %.1f kHz: filter %.0f dB, with jitter %.0f dB, %.1f ppm",
+            p / 1000, c / 1000, filter, wander, run.ratio),
+            filter < -90 && wander < sameRate + 10 && run.underruns == 0 && run.overruns == 0
+                && abs(run.ratio + 18) < 2, "\(run)")
+    }
+    for (p, c) in [(192000.0, 48000.0), (96000.0, 48000.0), (48000.0, 44100.0)] {
+        var out: [Float] = []
+        let tone = c * 0.5 + 3000 // above the lower rate's band
+        _ = simulate(ppm: 0, producerBlock: 512, consumerBlock: 128, saved: 0, seconds: 10,
+            producerRate: p, consumerRate: c, tone: tone, capture: &out)
+        let alias = rmsDB(out, below: 0.5)
+        check(String(format: "bridge %.1f to %.1f kHz: a %.1f kHz tone is gone (%.0f dB)", p / 1000, c / 1000,
+            tone / 1000, alias), alias < -60)
+    }
 }
 
 print(failures == 0 ? "all passed" : "\(failures) FAILED")

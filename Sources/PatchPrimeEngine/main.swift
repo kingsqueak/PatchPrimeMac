@@ -22,6 +22,13 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     // What each slot is bound to now, so only real changes touch audio.
     var boundInputs: [Int: String] = [:]
     var boundOutputs: [Int: String] = [:]
+    // Devices given their rate and buffer since the engine last started, with the
+    // rate they had, so a change made elsewhere (Audio MIDI Setup) is noticed.
+    var prepared: [AudioObjectID: Double] = [:]
+    var watchedRates: Set<AudioObjectID> = []
+    var pendingRestart: DispatchWorkItem?
+    var engineRate = 0.0
+    var engineBlock = 0
     var offline: Set<String> = []
     let rateTimer = DispatchSource.makeTimerSource(queue: .main)
     var pendingSave: DispatchWorkItem?
@@ -65,12 +72,81 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
 
     func startCoreIfPossible() {
         guard core == nil, let hidden = deviceForUID("PatchPrimeMac.Engine") else { return }
-        let created = pp_engine_create(hidden, 48000)
+        // The virtual devices all follow the hidden one's rate.
+        if !setNominalRate(hidden, settings.sampleRate) {
+            note = "The virtual devices didn't change to \(Int(settings.sampleRate)) Hz, so the engine runs at \(Int(nominalRate(hidden))) Hz."
+        }
+        let rate = nominalRate(hidden)
+        let created = pp_engine_create(hidden, rate, Int32(settings.bufferFrames))
         guard pp_engine_start(created) == 0 else {
             pp_engine_destroy(created)
             return
         }
         core = created
+        engineRate = rate
+        engineBlock = settings.bufferFrames
+        watchRate(hidden)
+    }
+
+    /// Stops the engine and starts it again with the current settings. Used for a new
+    /// rate or buffer size; every route is bound again, so each device re-locks.
+    func restartCore() {
+        pendingRestart?.cancel()
+        pendingRestart = nil
+        if let core { pp_engine_destroy(core) }
+        core = nil
+        boundInputs = [:]
+        boundOutputs = [:]
+        prepared = [:]
+        startCoreIfPossible()
+        apply()
+    }
+
+    func restartSoon() {
+        pendingRestart?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.restartCore() }
+        pendingRestart = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+    }
+
+    /// Before the engine first opens a device: its rate (to the engine's, unless it's
+    /// told to keep its own or can't), then this process's buffer size on it.
+    func prepare(_ device: AudioDeviceInfo) {
+        guard prepared[device.id] == nil else { return }
+        let uid = device.signature.uid
+        if !settings.keepOwnRate.contains(uid), supportsRate(device.id, engineRate) {
+            if !setNominalRate(device.id, engineRate) {
+                note = "\(device.signature.name) didn't change to \(Int(engineRate)) Hz, so it's resampled."
+            }
+        }
+        setBufferFrames(device.id, settings.buffer(for: uid))
+        prepared[device.id] = nominalRate(device.id)
+        watchRate(device.id)
+    }
+
+    /// If a device in use changes rate from outside, the engine starts again with it.
+    /// If the hidden device does (someone set a virtual device's rate in Audio MIDI
+    /// Setup), that becomes the setting.
+    func watchRate(_ id: AudioObjectID) {
+        guard !watchedRates.contains(id) else { return }
+        watchedRates.insert(id)
+        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        AudioObjectAddPropertyListenerBlock(id, &address, .main) { [weak self] _, _ in
+            guard let self, self.core != nil else { return }
+            let now = nominalRate(id)
+            if id == deviceForUID("PatchPrimeMac.Engine") {
+                if abs(now - self.engineRate) > 0.5, Settings.rates.contains(now) {
+                    var next = self.settings
+                    next.sampleRate = now
+                    self.settings = next
+                    try? self.store.save(next)
+                    self.restartSoon()
+                }
+            } else if let was = self.prepared[id], abs(now - was) > 0.5 {
+                self.restartSoon()
+            }
+        }
     }
 
     func refreshDevices() {
@@ -80,6 +156,8 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         if let core {
             for gone in previous where !devices.contains(where: { $0.id == gone.id }) {
                 pp_engine_device_lost(core, gone.id)
+                prepared[gone.id] = nil
+                watchedRates.remove(gone.id)
                 boundInputs = boundInputs.filter { !$0.value.hasPrefix("device:\(gone.id):") }
                 boundOutputs = boundOutputs.filter { !$0.value.hasPrefix("device:\(gone.id):") }
             }
@@ -165,6 +243,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
                         boundOutputs[slot] = wanted
                     case let .device(signature, left, right):
                         if let device = resolve(signature) {
+                            prepare(device)
                             let saved = settings.savedRates[device.signature.uid] ?? 0
                             if pp_engine_bind_output_device(core, Int32(slot), device.id, Int32(left), Int32(right), -saved) == 0 {
                                 boundOutputs[slot] = wanted
@@ -191,6 +270,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             }
             return false
         }
+        prepare(device)
         let saved = settings.savedRates[device.signature.uid] ?? 0
         return pp_engine_bind_input_device(core, Int32(slot), device.id, Int32(left), Int32(right), saved) == 0
     }
@@ -263,7 +343,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
                     if let last = clockMarks.last, seconds <= last.0 || sample < last.1 { clockMarks = [] }
                     clockMarks.append((seconds, sample))
                     clockMarks.removeAll { seconds - $0.0 > 20 }
-                    if clockMarks.count >= 20, let fit = fitRate(clockMarks) {
+                    if clockMarks.count >= 20, let fit = fitRate(clockMarks, nominal: nominalRate(device.id)) {
                         want = fit
                         text = String(format: "%@, %.1f ppm", device.signature.name, want)
                     } else {
@@ -290,7 +370,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         }
     }
 
-    func fitRate(_ marks: [(Double, Double)]) -> Double? {
+    func fitRate(_ marks: [(Double, Double)], nominal: Double) -> Double? {
         let n = Double(marks.count)
         let x0 = marks[0].0, y0 = marks[0].1
         var sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0
@@ -303,7 +383,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         }
         let d = n * sxx - sx * sx
         guard d > 0 else { return nil }
-        return ((n * sxy - sx * sy) / d / 48000 - 1) * 1e6
+        return ((n * sxy - sx * sy) / d / nominal - 1) * 1e6
     }
 
     func shutDown() {
@@ -320,8 +400,14 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         guard problems.isEmpty else {
             return Reply(ok: false, text: problems.joined(separator: "\n"))
         }
+        let restart = candidate.sampleRate != settings.sampleRate || candidate.bufferFrames != settings.bufferFrames
+            || candidate.deviceBuffers != settings.deviceBuffers || candidate.keepOwnRate != settings.keepOwnRate
         settings = candidate
-        apply()
+        if restart, core != nil {
+            restartCore()
+        } else {
+            apply()
+        }
         pendingSave?.cancel()
         pendingSave = nil
         if later {
@@ -516,6 +602,38 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             }
             setDefaultDevice(.systemOutput, device.id)
             return Reply(ok: setDefaultDevice(.output, device.id), text: "done")
+        case "rate" where args.count == 1:
+            guard let hz = Double(args.first!), Settings.rates.contains(hz) else {
+                return Reply(ok: false, text: "rate 44100|48000|96000|192000")
+            }
+            next.sampleRate = hz
+            return commit(next, "engine restarted at \(Int(hz)) Hz")
+        case "buffer" where args.count == 1:
+            guard let frames = Int(args.first!), Settings.buffers.contains(frames) else {
+                return Reply(ok: false, text: "buffer 32|64|128|256|512|1024")
+            }
+            next.bufferFrames = frames
+            return commit(next, "engine restarted with \(frames)-frame buffers")
+        case "device-buffer" where args.count == 2, "device-rate" where args.count == 2:
+            let a = Array(args)
+            guard let device = devices.first(where: { $0.signature.name == a[0] && !$0.signature.uid.hasPrefix("PatchPrimeMac.") }) else {
+                return Reply(ok: false, text: "no device called \"\(a[0])\"")
+            }
+            let uid = device.signature.uid
+            if verb == "device-rate" {
+                switch a[1] {
+                case "follow": next.keepOwnRate.remove(uid)
+                case "own": next.keepOwnRate.insert(uid)
+                default: return Reply(ok: false, text: "device-rate <name> follow|own")
+                }
+            } else if a[1] == "default" {
+                next.deviceBuffers[uid] = nil
+            } else if let frames = Int(a[1]), Settings.buffers.contains(frames) {
+                next.deviceBuffers[uid] = frames
+            } else {
+                return Reply(ok: false, text: "device-buffer <name> 32|64|128|256|512|1024|default")
+            }
+            return commit(next, "done, engine restarted")
         case "hardware" where args.count == 1:
             next.hardwareOutputEnabled = args.first == "on"
             return commit(next, "hardware output \(next.hardwareOutputEnabled ? "ON" : "off")")
@@ -535,6 +653,8 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             route strip <n> bus <n> <gain> | route strip <n> out <n> <gain> | route bus <n> out <n> <gain>
             gain strip|bus|out <n> <linear> | mute strip|bus|out <n> on|off
             clock patchprime | clock <device name>
+            rate 44100|48000|96000|192000 | buffer 32|64|128|256|512|1024
+            device-buffer <name> <frames>|default | device-rate <name> follow|own
             default output|input <virtual slot> | default-device output|input <device name>
             strip-remove <n> | bus-remove <n> | out-remove <n>
             virtual-list | virtual-add <slot> out|in <name> | virtual-rename <slot> <name> | virtual-remove <slot>
@@ -551,10 +671,20 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         snap.note = note
         snap.settings = settings
         snap.offline = Array(offline)
-        snap.devices = devices.filter { !$0.signature.uid.hasPrefix("PatchPrimeMac.") }.map {
-            DeviceRow(uid: $0.signature.uid, name: $0.signature.name, transport: $0.signature.transport,
-                inputs: $0.inputs, outputs: $0.outputs)
+        snap.devices = devices.filter { !$0.signature.uid.hasPrefix("PatchPrimeMac.") }.map { d in
+            var row = DeviceRow(uid: d.signature.uid, name: d.signature.name, transport: d.signature.transport,
+                inputs: d.inputs, outputs: d.outputs)
+            row.rate = nominalRate(d.id)
+            row.rates = Settings.rates.filter { supportsRate(d.id, $0) }
+            if let range = bufferRange(d.id) {
+                row.bufferMin = range.lowerBound
+                row.bufferMax = range.upperBound
+            }
+            row.buffer = prepared[d.id] != nil ? bufferFrames(d.id) : 0
+            return row
         }
+        snap.engineRate = engineRate
+        snap.engineBlock = engineBlock
         snap.virtuals = driverList().split(separator: "\n").compactMap { line in
             let parts = line.split(separator: "\t", maxSplits: 2).map(String.init)
             guard parts.count == 3, let slot = Int(parts[0]) else { return nil }
@@ -586,6 +716,14 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             s.cycles, s.underruns, s.overruns, s.resyncs, s.maxGapMs, s.devices))
         if let note { lines.append("NOTE: \(note)") }
         lines.append("clock: \(clockText)")
+        lines.append(String(format: "engine %.1f kHz, %d-frame blocks (%.2f ms)", engineRate / 1000, engineBlock,
+            Double(engineBlock) / engineRate * 1000))
+        for device in devices where prepared[device.id] != nil {
+            let rate = nominalRate(device.id)
+            let frames = bufferFrames(device.id)
+            lines.append(String(format: "device %@: %.1f kHz%@, %d-frame buffer (%.2f ms)", device.signature.name,
+                rate / 1000, abs(rate - engineRate) > 0.5 ? " (resampled)" : "", frames, Double(frames) / rate * 1000))
+        }
         func db(_ v: Float) -> String { v > 0 ? String(format: "%.1f dBFS", 20 * log10(v)) : "silent" }
         for strip in settings.strips {
             let state = offline.contains(strip.label) ? "OFFLINE" : db(peaks[MeterLayout.strip(strip.slot)])
