@@ -418,6 +418,7 @@ struct ContentView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .frame(width: 260)
+                SceneMenu()
                 Spacer()
                 statusText
                 Button(model.snapshot.settings.hardwareOutputEnabled ? "Hardware Output On" : "Hardware Output Off") {
@@ -465,6 +466,69 @@ struct ContentView: View {
             Text("Audio dropouts: \(model.snapshot.underruns + model.snapshot.overruns)").foregroundStyle(.orange).font(.caption)
         } else {
             Text("Running").foregroundStyle(.secondary).font(.caption)
+        }
+    }
+}
+
+/// Scenes: load one (it changes only the mix, so it's safe mid-stream), save the mix
+/// as one, replace or delete one.
+struct SceneMenu: View {
+    @EnvironmentObject var model: Model
+    @State private var saving = false
+    @State private var name = ""
+    @State private var deleting: String?
+
+    var body: some View {
+        let scenes = model.snapshot.scenes
+        let last = model.snapshot.settings.lastScene
+        Menu {
+            if scenes.isEmpty {
+                Text("No scenes yet")
+            }
+            ForEach(scenes, id: \.self) { scene in
+                Button {
+                    model.send(["scene-load", scene])
+                } label: {
+                    if scene == last { Label(scene, systemImage: "checkmark") } else { Text(scene) }
+                }
+            }
+            Divider()
+            Button("Save Mix as Scene…") {
+                name = ""
+                saving = true
+            }
+            if let last, scenes.contains(last) {
+                Button("Update \"\(last)\" with This Mix") { model.send(["scene-save", last]) }
+            }
+            if !scenes.isEmpty {
+                Menu("Delete") {
+                    ForEach(scenes, id: \.self) { scene in
+                        Button(scene, role: .destructive) { deleting = scene }
+                    }
+                }
+            }
+        } label: {
+            Label(last.map { scenes.contains($0) ? $0 : "Scenes" } ?? "Scenes", systemImage: "square.stack.3d.up")
+        }
+        .fixedSize()
+        .help("A scene is the mix: levels, mutes, sends, effects and the system defaults. Loading one never adds or removes anything, so it's safe while live.")
+        .alert("Save the mix as a scene", isPresented: $saving) {
+            TextField("Scene name", text: $name)
+            Button("Cancel", role: .cancel) {}
+            Button("Save") { model.send(["scene-save", name]) }
+                .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+        } message: {
+            Text(model.snapshot.scenes.contains(name.trimmingCharacters(in: .whitespaces))
+                ? "A scene with this name will be replaced." : "Levels, mutes, sends, effects and the system defaults.")
+        }
+        .alert("Delete the scene \"\(deleting ?? "")\"?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
+            Button("Cancel", role: .cancel) { deleting = nil }
+            Button("Delete", role: .destructive) {
+                if let d = deleting { model.send(["scene-delete", d]) }
+                deleting = nil
+            }
+        } message: {
+            Text("The mix you have now isn't changed.")
         }
     }
 }

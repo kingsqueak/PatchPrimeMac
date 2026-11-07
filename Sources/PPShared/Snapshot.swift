@@ -69,6 +69,7 @@ public struct Snapshot: Codable, Sendable, Equatable {
     public var chainPresets: [String] = []
     public var builtInChains: [String] = []
     public var effectPresets: [String: [String]] = [:]
+    public var scenes: [String] = []
 
     public init() {}
 }

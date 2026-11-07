@@ -212,6 +212,8 @@ extension Snapshot {
         s.devices = [m2Row, speakers]
         s.engineRate = 48000
         s.engineBlock = 128
+        s.scenes = ["Radio", "Streaming"]
+        s.settings.lastScene = "Streaming"
         s.builtInChains = BuiltInChains.names
         s.chainPresets = ["RE20 streaming"]
         s.effectPresets = ["compressor": ["Gentle"]]

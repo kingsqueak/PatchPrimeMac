@@ -138,6 +138,48 @@ do {
     check("presets", false, "\(error)")
 }
 
+// Scenes.
+do {
+    var base = Settings()
+    base.buses = [Bus(slot: 0, label: "Stream")]
+    base.outputs = [Output(slot: 0, label: "Stream Mic", sink: .virtual(slot: 1)), Output(slot: 1, label: "Speakers", sink: .virtual(slot: 2))]
+    base.strips = [Strip(slot: 0, label: "Mic", source: .virtual(slot: 0)), Strip(slot: 1, label: "Music", source: .virtual(slot: 3))]
+    base.strips[0].busSends = [Send(to: 0, gain: 1)]
+    base.strips[1].outputSends = [Send(to: 1, gain: 0.5)]
+    base.strips[1].effects = [EffectSetting(type: "ducker", key: 0)]
+    var radio = base
+    radio.strips[0].gain = 0.25
+    radio.strips[1].muted = true
+    radio.strips[0].effects = [EffectSetting(type: "gate")]
+    let scene = MixScene(name: "Radio", from: radio, defaultOutput: "", defaultInput: "")
+    let (back, count) = scene.applied(to: base)
+    check("a scene brings back levels, mutes and effects", count == 5 && back.strips[0].gain == 0.25
+        && back.strips[1].muted && back.strips[0].effects.first?.type == "gate")
+    check("and changes nothing else", back.strips.map(\.source) == base.strips.map(\.source) && back.outputs.map(\.sink) == base.outputs.map(\.sink))
+    // The strips moved: Music is in slot 0 now, Mic in slot 5, and a new strip took slot 1.
+    var moved = Settings()
+    moved.buses = [Bus(slot: 3, label: "Stream")]
+    moved.outputs = [Output(slot: 0, label: "Speakers", sink: .virtual(slot: 2))]
+    moved.strips = [Strip(slot: 0, label: "Music", source: .virtual(slot: 3)), Strip(slot: 1, label: "Guest", source: .virtual(slot: 4)),
+        Strip(slot: 5, label: "Mic", source: .virtual(slot: 0))]
+    let (landed, n) = MixScene(name: "Base", from: base, defaultOutput: "", defaultInput: "").applied(to: moved)
+    check("strips are found by name wherever they are now", n == 4 && landed.strips[2].busSends == [Send(to: 3, gain: 1)]
+        && landed.strips[0].outputSends == [Send(to: 0, gain: 0.5)], "\(landed.strips.map(\.busSends)) \(landed.strips.map(\.outputSends))")
+    check("a ducker's key follows its strip", landed.strips[0].effects.first?.key == 5)
+    check("a strip the scene doesn't know is left alone", landed.strips[1] == moved.strips[1])
+    check("and the result is a valid setup", landed.problems().isEmpty, "\(landed.problems())")
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ppscenes-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = SceneStore(folder: dir)
+    try store.save(scene)
+    try store.save(MixScene(name: "  apple / pie ", from: base, defaultOutput: "x", defaultInput: ""))
+    check("scenes save and list by name", store.names() == ["apple / pie", "Radio"], "\(store.names())")
+    check("and load back the same", store.load("Radio")?.strips == scene.strips && store.load("apple / pie")?.defaultOutput == "x")
+    check("and can be deleted", store.remove("Radio") && store.names() == ["apple / pie"])
+} catch {
+    check("scenes", false, "\(error)")
+}
+
 // Store.
 let folder = FileManager.default.temporaryDirectory.appendingPathComponent("ppshared-\(UUID().uuidString)")
 defer { try? FileManager.default.removeItem(at: folder) }

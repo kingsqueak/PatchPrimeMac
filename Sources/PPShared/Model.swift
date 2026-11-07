@@ -221,6 +221,8 @@ public struct Settings: Codable, Equatable, Sendable {
     /// Devices left at their own rate and resampled, by UID. A device that can't do
     /// the engine's rate is resampled anyway.
     public var keepOwnRate: Set<String> = []
+    /// The scene last loaded or saved, to show which is in use.
+    public var lastScene: String?
 
     public static let rates: [Double] = [44100, 48000, 96000, 192000]
     public static let buffers = [32, 64, 128, 256, 512, 1024]
@@ -229,7 +231,7 @@ public struct Settings: Codable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case version, strips, buses, outputs, hardwareOutputEnabled, hardwareLimit, savedRates,
-            clockDevice, sampleRate, bufferFrames, deviceBuffers, keepOwnRate
+            clockDevice, sampleRate, bufferFrames, deviceBuffers, keepOwnRate, lastScene
     }
 
     // By hand, so a settings file from an older version loads with defaults for what
@@ -249,6 +251,7 @@ public struct Settings: Codable, Equatable, Sendable {
         bufferFrames = try c.decodeIfPresent(Int.self, forKey: .bufferFrames) ?? d.bufferFrames
         deviceBuffers = try c.decodeIfPresent([String: Int].self, forKey: .deviceBuffers) ?? d.deviceBuffers
         keepOwnRate = try c.decodeIfPresent(Set<String>.self, forKey: .keepOwnRate) ?? d.keepOwnRate
+        lastScene = try c.decodeIfPresent(String.self, forKey: .lastScene)
     }
 
     /// The buffer size to ask of a device.

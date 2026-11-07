@@ -38,6 +38,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         return EffectCatalog.decode(String(cString: text))
     }()
     var presets = PresetStore(folder: Store.defaultFolder)
+    let scenes = SceneStore(folder: Store.defaultFolder)
     var appliedFx: [String: String] = [:]
     var appliedSafety: [Int: Float] = [:]
     var appliedKeys: [String: Int] = [:]
@@ -882,6 +883,48 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
                 return Reply(ok: false, text: "fx-all strip|bus|out <n> on|off")
             }
             return commit(next, on ? "effects on" : "effects bypassed")
+        case "scene-list":
+            let names = scenes.names()
+            return Reply(ok: true, text: names.isEmpty ? "no scenes" : names.map { $0 == settings.lastScene ? "\($0) (last loaded)" : $0 }.joined(separator: "\n"))
+        case "scene-save" where args.count >= 1:
+            let name = PresetStore.clean(args.joined(separator: " "))
+            func uid(_ kind: DefaultKind) -> String {
+                let id = defaultDevice(kind)
+                return id == kAudioObjectUnknown ? "" : stringProperty(id, kAudioDevicePropertyDeviceUID) ?? ""
+            }
+            let scene = MixScene(name: name, from: settings, defaultOutput: uid(.output), defaultInput: uid(.input))
+            do {
+                try scenes.save(scene)
+            } catch {
+                return Reply(ok: false, text: name.isEmpty ? "a scene needs a name" : "couldn't save the scene: \(error.localizedDescription)")
+            }
+            next.lastScene = name
+            return commit(next, "saved \"\(name)\"")
+        case "scene-load" where args.count >= 1:
+            let name = args.joined(separator: " ")
+            guard let scene = scenes.load(name) else { return Reply(ok: false, text: "no scene called \"\(name)\"") }
+            var (loaded, count) = scene.applied(to: next)
+            loaded.lastScene = scene.name
+            // The defaults, if those devices are here; ours are remembered as usual.
+            for (uid, kind) in [(scene.defaultOutput, DefaultKind.output), (scene.defaultInput, .input)] where !uid.isEmpty {
+                guard let id = deviceForUID(uid), id != defaultDevice(kind) else { continue }
+                if uid.hasPrefix("PatchPrimeMac.") {
+                    rememberDefault(kind)
+                    if kind == .output { rememberDefault(.systemOutput) }
+                }
+                setDefaultDevice(kind, id)
+                if kind == .output { setDefaultDevice(.systemOutput, id) }
+            }
+            let reply = commit(loaded, "loaded \"\(scene.name)\": \(count) strips, buses and outputs")
+            return reply
+        case "scene-delete" where args.count >= 1:
+            let name = args.joined(separator: " ")
+            guard scenes.remove(name) else { return Reply(ok: false, text: "no scene called \"\(name)\"") }
+            if PresetStore.clean(name) == settings.lastScene {
+                next.lastScene = nil
+                return commit(next, "deleted")
+            }
+            return Reply(ok: true, text: "deleted")
         case "preset-list":
             var lines = ["built in: " + BuiltInChains.names.joined(separator: ", "),
                 "yours: " + (presets.chainNames.isEmpty ? "none" : presets.chainNames.joined(separator: ", "))]
@@ -1000,6 +1043,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             fx-all strip|bus|out <n> on|off   every effect at once, keeping each one's switch
             fx-key strip|bus|out <n> <i> <strip>|none   which strip a ducker listens to
             preset-list | preset-save|preset-load strip|bus|out <n> <name> | preset-delete <name>
+            scene-list | scene-save <name> | scene-load <name> | scene-delete <name>
             fx-preset-save|fx-preset-load strip|bus|out <n> <i> <name> | fx-preset-delete <type> <name>
             default output|input <virtual slot> | default-device output|input <device name>
             strip-remove <n> | bus-remove <n> | out-remove <n>
@@ -1030,6 +1074,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             row.buffer = prepared[d.id] != nil ? bufferFrames(d.id) : 0
             return row
         }
+        snap.scenes = scenes.names()
         snap.chainPresets = presets.chainNames
         snap.builtInChains = BuiltInChains.names
         snap.effectPresets = presets.effectNames
