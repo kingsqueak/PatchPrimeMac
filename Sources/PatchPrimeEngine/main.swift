@@ -65,6 +65,10 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     var boundSince: [Int: Date] = [:]
     var lastRateReading: [String: Double] = [:]
     var clockMarks: [(Double, Double)] = []
+    // The engine's own clock: its cycle count, and when it last moved.
+    var lastCycles: UInt64 = 0
+    var cyclesMoved = Date()
+    var lastStallRestart = Date.distantPast
     var clockPpm = 0.0
     var clockText = "Patch Prime"
 
@@ -571,6 +575,21 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     /// goes away, the same slew takes the driver back to free running.
     func steerClock() {
         guard let core else { return }
+        // If the engine's clock stops (coreaudiod restarted, or another audio driver was
+        // installed or removed under it), nothing else will start it again: it does so
+        // here after 2 s, no more than once every 10 s.
+        let cycles = pp_engine_stats(core).cycles
+        if cycles != lastCycles {
+            lastCycles = cycles
+            cyclesMoved = Date()
+        } else if Date().timeIntervalSince(cyclesMoved) > 2, Date().timeIntervalSince(lastStallRestart) > 10 {
+            lastStallRestart = Date()
+            cyclesMoved = Date()
+            lastCycles = 0
+            note = "The engine's clock stopped (macOS's audio system changed under it), so it was restarted."
+            restartCore()
+            return
+        }
         if let mixer = pp_engine_mixer(core) {
             pp_mixer_collect(mixer)
             if plugins.reapDead(mixer) { apply() } // load them again

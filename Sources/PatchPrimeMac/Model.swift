@@ -153,6 +153,17 @@ final class Model: ObservableObject {
         }
     }
 
+    /// Several commands that depend on each other, in order, off the main thread. The
+    /// closure gets a way to send one and returns an error to show, or nil.
+    func sequence(_ steps: @escaping @Sendable (_ send: ([String]) -> Reply) -> String?) {
+        guard !offlineSample else { return }
+        let link = self.link
+        Task.detached(priority: .userInitiated) {
+            let error = steps { link.send($0, timeout: 8) }
+            await MainActor.run { [weak self] in self?.lastError = error }
+        }
+    }
+
     func send(_ words: [String]) {
         guard !offlineSample else { return }
         let link = self.link

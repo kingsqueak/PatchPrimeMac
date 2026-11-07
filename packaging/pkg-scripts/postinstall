@@ -1,0 +1,53 @@
+#!/bin/bash
+# After installing: coreaudiod restarts to load the driver (all audio stops for a
+# moment), and the logged-in user's engine is set up and started, so sound comes back
+# without opening the app. Other users get theirs when they first open PatchPrimeMac.
+label=com.kingsqueak.patchprimemac.engine
+engine=/Applications/PatchPrimeMac.app/Contents/Helpers/PatchPrimeEngine.app/Contents/MacOS/PatchPrimeEngine
+killall coreaudiod 2>/dev/null
+# Apple's AirPlay helper can lose its link to a restarted coreaudiod and then
+# re-register its driver hundreds of times a second, which keeps coreaudiod and every
+# app using sound busy. Restarting it (it ignores a plain kill; launchd starts it
+# again) avoids that.
+sleep 2
+killall -9 AirPlayXPCHelper 2>/dev/null
+sleep 2
+user=$(stat -f%Su /dev/console)
+[ -n "$user" ] && [ "$user" != root ] || exit 0
+uid=$(id -u "$user")
+home=$(dscl . -read "/Users/$user" NFSHomeDirectory | awk '{print $2}')
+# A development install's helper (from building the source) goes.
+rm -rf "$home/Applications/PatchPrimeMac"
+agents="$home/Library/LaunchAgents"
+logs="$home/Library/Logs/PatchPrimeMac"
+sudo -u "$user" mkdir -p "$agents" "$logs"
+plist="$agents/$label.plist"
+cat > "$plist" <<PL
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>$label</string>
+	<key>Program</key><string>$engine</string>
+	<key>RunAtLoad</key><true/>
+	<key>MachServices</key><dict><key>$label</key><true/></dict>
+	<key>ProcessType</key><string>Interactive</string>
+	<key>StandardOutPath</key><string>$logs/engine.log</string>
+	<key>StandardErrorPath</key><string>$logs/engine.log</string>
+	<key>AssociatedBundleIdentifiers</key><string>com.kingsqueak.patchprimemac</string>
+</dict>
+</plist>
+PL
+chown "$user":staff "$plist"
+chmod 644 "$plist"
+for try in 1 2 3; do
+    launchctl bootstrap "gui/$uid" "$plist" 2>/dev/null && break
+    sleep 1
+done
+# The app was open before an upgrade (preinstall quit it): open it again.
+reopen=/var/run/com.kingsqueak.patchprimemac.reopen
+if [ "$(cat "$reopen" 2>/dev/null)" = "$uid" ]; then
+    launchctl asuser "$uid" sudo -u "$user" open /Applications/PatchPrimeMac.app || true
+fi
+rm -f "$reopen"
+exit 0

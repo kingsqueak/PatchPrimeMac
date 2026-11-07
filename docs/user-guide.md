@@ -26,18 +26,26 @@ PatchPrimeMac is free and open source (GPL-3.0-or-later). It needs a Mac with Ap
 2. PatchPrimeMac isn't signed with a paid Apple certificate, so macOS stops the installer the first time: "can't be opened because Apple cannot check it". Open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** beside PatchPrimeMac. (Or, in Terminal: `xattr -dr com.apple.quarantine ~/Downloads/PatchPrimeMac-*.dmg` before opening it.)
 3. Run the installer. It asks for your password: it installs an audio driver, which only an administrator can.
 4. **At the end of the install, all sound on the Mac stops for a moment** while macOS's audio system restarts with the driver. Turn your speakers or amplifier down first if they're loud.
-5. The engine starts. The first time an input from a microphone is used, macOS asks to let **PatchPrimeEngine** use the microphone: allow it, or the mics stay silent.
+5. The engine starts. The first time an input from a microphone is used, macOS asks to let **PatchPrimeMac** use the microphone: allow it, or the mics stay silent.
 
 ### First setup
 
-<!-- keywords: first time, hardware output, safety, setup, add input, add output -->
+<!-- keywords: first time, start here, hardware output, safety, setup, add input, add output, patch desktop, patch mic, default output -->
 
-Open PatchPrimeMac (in Applications, or from the menu bar icon).
+Open PatchPrimeMac (in Applications, or from the menu bar icon). The first time, the mixer shows a **Start here** panel that sets up the usual mix in five steps, ticking each off as it's done:
+
+1. **Where you listen**: pick your speakers or headphones and click **Add Output**.
+2. **Your apps' sound**: **Set Up Patch Desktop** creates a virtual device called Patch Desktop, makes it the Mac's sound output, adds it as the **Desktop** strip and sends it to where you listen. From then on every app plays into the mixer. Apps that choose their own output device (call, streaming and radio apps, music software) have a setting for it: set it to Patch Desktop, or create a virtual device just for that app (see [Virtual devices and the system defaults](#virtual-devices-and-the-system-defaults)) to give it its own strip. To go back to playing straight to your speakers, pick them in System Settings → Sound.
+3. **Your microphones and instruments**: pick the device and channel and click **Add Input**. They aren't sent to your speakers until you route them, so a microphone can't feed back.
+4. **A microphone for apps** (optional): **Set Up Patch Mic** creates Patch Mic, makes it the Mac's microphone, and sends your inputs to it, so call and streaming apps hear your microphones with their effects.
+5. **Turn on hardware output.**
+
+**Hide** puts the panel away; it comes back if the mix is ever emptied. Everything it does can also be done by hand:
 
 - **Hardware output starts off.** Until you turn it on (the button at the top right), nothing reaches your speakers or headphones, so a mistake in routing can't blast your amplifier. When it's on, every hardware output has a safety limiter at −6 dBFS: nothing louder leaves.
 - **Add your inputs** in **Setup → Add an input**: pick the device and the channel (a microphone on input 1 of your interface, say), and give it a name.
 - **Add your outputs** in **Setup → Add a hardware output**: your headphones or speakers.
-- **Virtual devices** (Setup → Virtual devices): create one that apps play into (Desktop), add it as a strip with **Add Strip**, and make it the Mac's default output with **Make Default**, so your apps' sound comes through the mixer. Create one that apps record from (Stream Mic), add it as an output, and pick it as the microphone in your streaming or call app.
+- **Virtual devices** (Setup → Virtual devices): create one that apps play into (Desktop), add it as a strip with **Add Strip**, and make it the Mac's default output with **Make Default**, so your apps' sound comes through the mixer. Create one that apps record from (Mic), add it as an output, and pick it as the microphone in your streaming or call app. The Mac lists them with "Patch" in front: Patch Desktop, Patch Mic.
 - **Route** each strip where it should go (see [Routing](#routing)).
 
 ### Finding your way around
@@ -329,7 +337,7 @@ Run **Uninstall PatchPrimeMac** from the DMG (or the uninstaller in the app's He
 <!-- keywords: problem, no sound, silent, not working, help, fix -->
 
 - **No sound at all:** is the engine running (top bar, or the menu bar icon)? Is **Hardware Output** on? Is the strip routed to an output (its Route button), and that output not muted? If the Mac's default output is a virtual device and the engine isn't running, nothing plays: pick your speakers in **System Settings → Sound** to get sound back, then restart PatchPrimeMac.
-- **A microphone shows NO SIGNAL:** check the channel has the mic on it, and that PatchPrimeEngine is allowed in **System Settings → Privacy & Security → Microphone**.
+- **A microphone shows NO SIGNAL:** check the channel has the mic on it, and that PatchPrimeMac is allowed in **System Settings → Privacy & Security → Microphone**.
 - **A strip shows OFFLINE:** its device isn't there. Plug it in or switch it on; it comes back by itself.
 - **Clicks or dropouts:** try a bigger buffer size (Setup → Audio). `patchprime-ctl status` shows underruns, if any.
 - **A plugin shows a note:** it didn't load, or its process stopped and it's being loaded again. The note says which.

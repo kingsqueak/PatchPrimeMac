@@ -1,0 +1,16 @@
+#!/bin/bash
+# Before installing or upgrading: the logged-in user's engine and app stop, so their
+# files can be replaced. Audio through PatchPrimeMac stops until postinstall.
+user=$(stat -f%Su /dev/console)
+[ -n "$user" ] && [ "$user" != root ] || exit 0
+uid=$(id -u "$user")
+label=com.kingsqueak.patchprimemac.engine
+# Whether the app is open, so postinstall can open it again after an upgrade.
+reopen=/var/run/com.kingsqueak.patchprimemac.reopen
+rm -f "$reopen"
+pgrep -u "$uid" -x PatchPrimeMac >/dev/null && echo "$uid" > "$reopen"
+launchctl asuser "$uid" sudo -u "$user" osascript -e 'tell application id "com.kingsqueak.patchprimemac" to quit' >/dev/null 2>&1 || true
+launchctl bootout "gui/$uid/$label" 2>/dev/null || true
+for _ in $(seq 50); do launchctl print "gui/$uid/$label" >/dev/null 2>&1 || break; sleep 0.1; done
+for pid in $(pgrep -u "$uid" -x PatchPrimeEngine); do kill "$pid"; done
+exit 0

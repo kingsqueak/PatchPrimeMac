@@ -178,6 +178,8 @@ struct StripView: View {
 
 struct MixerView: View {
     @EnvironmentObject var model: Model
+    @AppStorage("startHereHidden") private var startHereHidden = false
+    var showRouting: () -> Void = {}
 
     func detail(_ e: Endpoint) -> String {
         switch e {
@@ -199,6 +201,14 @@ struct MixerView: View {
         let s = model.snapshot.settings
         VStack(spacing: 0) {
         CueBar()
+        let nothingYet = s.strips.isEmpty && s.outputs.isEmpty && s.buses.isEmpty
+        if StartHereView.shows(s, hidden: startHereHidden) {
+            // Alone while there's nothing to show below it; then above the strips.
+            ScrollView(.vertical) { StartHereView(showRouting: showRouting) }
+                .frame(maxHeight: nothingYet ? .infinity : 340)
+                .onAppear { if nothingYet { startHereHidden = false } }
+        }
+        if !nothingYet {
         ScrollView(.horizontal) {
             HStack(alignment: .top, spacing: 18) {
                 section("INPUTS", .green) {
@@ -225,6 +235,7 @@ struct MixerView: View {
             }
             .padding(14)
             .frame(maxHeight: .infinity, alignment: .top)
+        }
         }
         }
     }
@@ -587,7 +598,7 @@ struct ContentView: View {
             Divider()
             Group {
                 switch tab {
-                case 0: MixerView()
+                case 0: MixerView { tab = 1 }
                 case 1: RoutingView()
                 default: SetupView()
                 }

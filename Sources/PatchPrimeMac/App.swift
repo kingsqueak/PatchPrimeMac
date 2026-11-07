@@ -8,6 +8,11 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     // The menu bar item stays when the window closes, as the audio does.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    // In front when opened, not behind the installer or whatever opened it.
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.activate(ignoringOtherApps: true)
+    }
 }
 
 @main
@@ -16,6 +21,7 @@ struct PatchPrimeMacApp: App {
     @StateObject private var model = Model()
 
     init() {
+        EngineAgent.ensure()
         if let at = CommandLine.arguments.firstIndex(of: "--render"), at + 1 < CommandLine.arguments.count {
             Self.render(to: CommandLine.arguments[at + 1])
             exit(0)
@@ -111,5 +117,63 @@ struct HelpCommand: View {
     var body: some View {
         Button("PatchPrimeMac Help") { openWindow(id: "help") }
             .keyboardShortcut("?", modifiers: .command)
+        if let uninstaller = EngineAgent.uninstaller {
+            Divider()
+            Button("Uninstall PatchPrimeMac…") { NSWorkspace.shared.open(uninstaller) }
+        }
+    }
+}
+
+/// The engine's LaunchAgent, for an installed copy (the engine inside this app's
+/// bundle): written and started if it's missing or points at another copy, so the
+/// engine runs for every user who opens the app, and after the app is moved.
+enum EngineAgent {
+    static let label = "com.kingsqueak.patchprimemac.engine"
+
+    static var bundledEngine: URL? {
+        let url = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/PatchPrimeEngine.app/Contents/MacOS/PatchPrimeEngine")
+        return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
+    }
+
+    static func ensure() {
+        guard let engine = bundledEngine else { return } // a development build: scripts do this
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let plist = home.appendingPathComponent("Library/LaunchAgents/\(label).plist")
+        let logs = home.appendingPathComponent("Library/Logs/PatchPrimeMac")
+        if let current = NSDictionary(contentsOf: plist), current["Program"] as? String == engine.path { return }
+        try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: plist.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let agent: NSDictionary = [
+            "Label": label,
+            "Program": engine.path,
+            "RunAtLoad": true,
+            "MachServices": [label: true],
+            "ProcessType": "Interactive",
+            "StandardOutPath": logs.appendingPathComponent("engine.log").path,
+            "StandardErrorPath": logs.appendingPathComponent("engine.log").path,
+            "AssociatedBundleIdentifiers": "com.kingsqueak.patchprimemac",
+        ]
+        let domain = "gui/\(getuid())"
+        run("/bin/launchctl", ["bootout", "\(domain)/\(label)"])
+        guard agent.write(to: plist, atomically: true) else { return }
+        run("/bin/launchctl", ["bootstrap", domain, plist.path])
+    }
+
+    @discardableResult
+    static func run(_ tool: String, _ args: [String]) -> Int32 {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: tool)
+        p.arguments = args
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return -1 }
+        p.waitUntilExit()
+        return p.terminationStatus
+    }
+
+    /// The uninstaller inside the app, if this is an installed copy.
+    static var uninstaller: URL? {
+        let url = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/Uninstall PatchPrimeMac.app")
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 }

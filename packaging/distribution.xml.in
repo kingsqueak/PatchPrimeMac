@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>PatchPrimeMac @VERSION@</title>
+    <welcome file="welcome.html" mime-type="text/html"/>
+    <license file="LICENSE.txt"/>
+    <conclusion file="conclusion.html" mime-type="text/html"/>
+    <options customize="never" require-scripts="true" hostArchitectures="arm64"/>
+    <domains enable_localSystem="true"/>
+    <allowed-os-versions><os-version min="26.0"/></allowed-os-versions>
+    <choices-outline><line choice="default"><line choice="patchprimemac"/></line></choices-outline>
+    <choice id="default"/>
+    <choice id="patchprimemac" visible="false"><pkg-ref id="com.kingsqueak.patchprimemac"/></choice>
+    <pkg-ref id="com.kingsqueak.patchprimemac" version="@VERSION@" onConclusion="none">PatchPrimeMac-core.pkg</pkg-ref>
+</installer-gui-script>
