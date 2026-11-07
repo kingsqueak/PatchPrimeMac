@@ -14,6 +14,24 @@ let package = Package(
             path: "Sources/PPCore",
             cxxSettings: [.unsafeFlags(["-O3", "-ffast-math", "-fno-exceptions", "-fno-rtti"])],
             linkerSettings: [.linkedFramework("CoreAudio")]),
+        .target(
+            name: "PPShared",
+            path: "Sources/PPShared",
+            swiftSettings: [.swiftLanguageMode(.v5)]),
+        .executableTarget(
+            name: "PatchPrimeEngine",
+            dependencies: ["PPCore", "PPShared"],
+            path: "Sources/PatchPrimeEngine",
+            swiftSettings: [.swiftLanguageMode(.v5)]),
+        .executableTarget(
+            name: "patchprime-ctl",
+            dependencies: ["PPShared"],
+            path: "Sources/patchprime-ctl",
+            swiftSettings: [.swiftLanguageMode(.v5)]),
+        .executableTarget(
+            name: "ppshared-test",
+            dependencies: ["PPShared"],
+            path: "Sources/ppshared-test"),
         .executableTarget(
             name: "ppengine-live",
             dependencies: ["PPCore"],
