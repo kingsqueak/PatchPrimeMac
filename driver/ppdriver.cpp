@@ -7,14 +7,19 @@
 // ppdriver add <slot> <out|in> <name>
 // ppdriver remove <slot>
 // ppdriver rename <slot> <name>
-// ppdriver prepare-uninstall   moves defaults off our devices, then deletes all of them
-//                              and their saved list
+// ppdriver prepare-uninstall [previous-defaults.txt]
+//                              moves defaults off our devices (back to the ones in the
+//                              file, which the helper wrote, else built-in, else a real
+//                              device), then deletes all of them and their saved list
 
 #include <CoreAudio/CoreAudio.h>
 #include <CoreFoundation/CoreFoundation.h>
 
 #include <chrono>
 #include <cstdio>
+#include <fstream>
+#include <map>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -76,10 +81,20 @@ bool hasStreams(AudioObjectID id, AudioObjectPropertyScope scope)
     return size > 0;
 }
 
-// If a default device is ours, pick a real one, so nothing points at a device that's
-// about to go.
+UInt32 transportOf(AudioObjectID id)
+{
+    AudioObjectPropertyAddress a{kAudioDevicePropertyTransportType,
+        kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+    UInt32 value = 0, size = sizeof value;
+    AudioObjectGetPropertyData(id, &a, 0, nullptr, &size, &value);
+    return value;
+}
+
+// If a default device is ours, move it so nothing points at a device that's about to
+// go: to the device it was on before (from the helper's file), else a built-in one,
+// else any real device, else anything that isn't ours.
 void releaseDefault(AudioObjectPropertySelector which, AudioObjectPropertyScope scope,
-    const char *label)
+    const char *label, const std::string &previousUID)
 {
     AudioObjectPropertyAddress d{which, kAudioObjectPropertyScopeGlobal,
         kAudioObjectPropertyElementMain};
@@ -94,14 +109,48 @@ void releaseDefault(AudioObjectPropertySelector which, AudioObjectPropertyScope 
     AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &a, 0, nullptr, &size);
     std::vector<AudioObjectID> ids(size / sizeof(AudioObjectID));
     AudioObjectGetPropertyData(kAudioObjectSystemObject, &a, 0, nullptr, &size, ids.data());
+    AudioObjectID best = kAudioObjectUnknown;
+    int bestRank = 0;
     for (AudioObjectID id : ids) {
-        if (!ours(id) && hasStreams(id, scope)) {
-            AudioObjectSetPropertyData(kAudioObjectSystemObject, &d, 0, nullptr, sizeof id, &id);
-            std::printf("%s moved to %s\n", label, stringProperty(id, kAudioObjectPropertyName).c_str());
-            return;
+        if (ours(id) || !hasStreams(id, scope)) {
+            continue;
+        }
+        const UInt32 t = transportOf(id);
+        int rank = 1;
+        if (!previousUID.empty() && stringProperty(id, kAudioDevicePropertyDeviceUID) == previousUID) {
+            rank = 4;
+        } else if (t == kAudioDeviceTransportTypeBuiltIn) {
+            rank = 3;
+        } else if (t != kAudioDeviceTransportTypeVirtual && t != kAudioDeviceTransportTypeAggregate
+            && t != kAudioDeviceTransportTypeAutoAggregate) {
+            rank = 2;
+        }
+        if (rank > bestRank) {
+            best = id;
+            bestRank = rank;
         }
     }
-    std::printf("%s: no other device to move to\n", label);
+    if (best == kAudioObjectUnknown) {
+        std::printf("%s: no other device to move to\n", label);
+        return;
+    }
+    AudioObjectSetPropertyData(kAudioObjectSystemObject, &d, 0, nullptr, sizeof best, &best);
+    std::printf("%s moved to %s%s\n", label, stringProperty(best, kAudioObjectPropertyName).c_str(),
+        bestRank == 4 ? " (where it was before)" : "");
+}
+
+std::map<std::string, std::string> readPrevious(const char *path)
+{
+    std::map<std::string, std::string> result;
+    std::ifstream in(path ? path : "");
+    std::string line;
+    while (std::getline(in, line)) {
+        const auto space = line.find(' ');
+        if (space != std::string::npos) {
+            result[line.substr(0, space)] = line.substr(space + 1);
+        }
+    }
+    return result;
 }
 
 } // namespace
@@ -127,9 +176,13 @@ int main(int argc, char **argv)
         return 0;
     }
     if (verb == "prepare-uninstall") {
-        releaseDefault(kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyScopeOutput, "default output");
-        releaseDefault(kAudioHardwarePropertyDefaultSystemOutputDevice, kAudioObjectPropertyScopeOutput, "system sounds");
-        releaseDefault(kAudioHardwarePropertyDefaultInputDevice, kAudioObjectPropertyScopeInput, "default input");
+        auto previous = readPrevious(argc > 2 ? argv[2] : nullptr);
+        releaseDefault(kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyScopeOutput,
+            "default output", previous["output"]);
+        releaseDefault(kAudioHardwarePropertyDefaultSystemOutputDevice, kAudioObjectPropertyScopeOutput,
+            "system sounds", previous["systemOutput"]);
+        releaseDefault(kAudioHardwarePropertyDefaultInputDevice, kAudioObjectPropertyScopeInput,
+            "default input", previous["input"]);
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
         std::puts(command(engine, "reset").c_str());
         return 0;

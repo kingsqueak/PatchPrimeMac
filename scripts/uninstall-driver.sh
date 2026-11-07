@@ -8,8 +8,9 @@ hal=/Library/Audio/Plug-Ins/HAL
 prefs=/Library/Preferences/Audio
 
 # First, while the driver is still there: defaults off our devices, saved list gone.
-if [ -x "$root/build/driver/ppdriver" ]; then
-    "$root/build/driver/ppdriver" prepare-uninstall || true
+if [ "${1:-}" != "--skip-prepare" ] && [ -x "$root/build/driver/ppdriver" ]; then
+    "$root/build/driver/ppdriver" prepare-uninstall \
+        "${SUDO_HOME:-$HOME}/Library/Application Support/PatchPrimeMac/previous-defaults.txt" || true
 fi
 rm -rf "$hal/PatchPrimeMac.driver" "$hal/PatchPrimeMacSpike.driver"
 killall coreaudiod # a fresh start, with the driver gone

@@ -495,9 +495,12 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             let ok: Bool
             switch a[0] {
             case "output":
+                rememberDefault(.output)
+                rememberDefault(.systemOutput)
                 ok = setDefaultDevice(.output, id)
                 setDefaultDevice(.systemOutput, id)
             case "input":
+                rememberDefault(.input)
                 ok = setDefaultDevice(.input, id)
             default:
                 return Reply(ok: false, text: "default output|input <slot>")

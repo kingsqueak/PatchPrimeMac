@@ -142,6 +142,24 @@ public func defaultDevice(_ kind: DefaultKind) -> AudioObjectID {
     return id
 }
 
+/// Before a default moves to one of our devices, remember the device it was on, so
+/// the uninstaller can put it back. Kept in previous-defaults.txt as "<kind> <uid>"
+/// lines; the first device seen for each kind is kept, not overwritten.
+public func rememberDefault(_ kind: DefaultKind) {
+    let current = defaultDevice(kind)
+    guard current != kAudioObjectUnknown,
+          let uid = stringProperty(current, kAudioDevicePropertyDeviceUID),
+          !uid.hasPrefix("PatchPrimeMac.") else { return }
+    let key = "\(kind)"
+    let file = Store.defaultFolder.appendingPathComponent("previous-defaults.txt")
+    var lines = ((try? String(contentsOf: file, encoding: .utf8)) ?? "")
+        .split(separator: "\n").map(String.init)
+    lines.removeAll { $0.hasPrefix(key + " ") }
+    lines.append("\(key) \(uid)")
+    try? FileManager.default.createDirectory(at: Store.defaultFolder, withIntermediateDirectories: true)
+    try? (lines.joined(separator: "\n") + "\n").write(to: file, atomically: true, encoding: .utf8)
+}
+
 @discardableResult
 public func setDefaultDevice(_ kind: DefaultKind, _ id: AudioObjectID) -> Bool {
     var address = AudioObjectPropertyAddress(mSelector: kind.selector,
