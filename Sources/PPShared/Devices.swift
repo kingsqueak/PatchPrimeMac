@@ -120,3 +120,46 @@ public func driverList() -> String {
     guard let engine = deviceForUID("PatchPrimeMac.Engine") else { return "" }
     return stringProperty(engine, 0x7070_6C73) ?? "" // 'ppls'
 }
+
+public enum DefaultKind {
+    case output, input, systemOutput
+
+    var selector: AudioObjectPropertySelector {
+        switch self {
+        case .output: return kAudioHardwarePropertyDefaultOutputDevice
+        case .input: return kAudioHardwarePropertyDefaultInputDevice
+        case .systemOutput: return kAudioHardwarePropertyDefaultSystemOutputDevice
+        }
+    }
+}
+
+public func defaultDevice(_ kind: DefaultKind) -> AudioObjectID {
+    var address = AudioObjectPropertyAddress(mSelector: kind.selector,
+        mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    var id = AudioObjectID(kAudioObjectUnknown)
+    var size = UInt32(MemoryLayout<AudioObjectID>.size)
+    AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &id)
+    return id
+}
+
+@discardableResult
+public func setDefaultDevice(_ kind: DefaultKind, _ id: AudioObjectID) -> Bool {
+    var address = AudioObjectPropertyAddress(mSelector: kind.selector,
+        mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    var value = id
+    return AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil,
+        UInt32(MemoryLayout<AudioObjectID>.size), &value) == noErr
+}
+
+public func deviceName(_ id: AudioObjectID) -> String {
+    stringProperty(id, kAudioObjectPropertyName) ?? ""
+}
+
+/// Steers the driver's clock, in parts per million from nominal.
+public func setDriverRate(ppm: Double) {
+    guard let engine = deviceForUID("PatchPrimeMac.Engine") else { return }
+    var address = AudioObjectPropertyAddress(mSelector: 0x7070_7274, // 'pprt'
+        mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    var value = String(format: "%.4f", ppm) as CFString
+    AudioObjectSetPropertyData(engine, &address, 0, nil, UInt32(MemoryLayout<CFString>.size), &value)
+}

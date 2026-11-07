@@ -87,8 +87,12 @@ void pp_engine_unbind_input(PPEngine *e, int input);
 void pp_engine_unbind_output(PPEngine *e, int output);
 void pp_engine_device_lost(PPEngine *e, unsigned int device);
 PPEngineStats pp_engine_stats(PPEngine *e);
+// The newest time and sample position of an open device. 0 if it isn't open.
+int pp_engine_device_clock(PPEngine *e, unsigned int device, double *seconds, double *sample);
 double pp_engine_input_ratio_ppm(PPEngine *e, int input);
 double pp_engine_output_ratio_ppm(PPEngine *e, int output);
+
+int pp_shm_open(const char *name, int flags, int mode);
 
 // The clock bridge, exposed for the offline tests.
 typedef struct PPBridge PPBridge;

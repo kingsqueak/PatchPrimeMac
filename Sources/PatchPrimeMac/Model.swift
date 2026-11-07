@@ -8,11 +8,26 @@ import Foundation
 import PPShared
 import SwiftUI
 
-/// Meter levels live apart from the rest, so a moving meter redraws only itself, not
-/// the whole window.
+/// Meter layers, by key. Levels go straight to them, so a moving meter costs one layer
+/// change and no SwiftUI at all.
 @MainActor
-final class Levels: ObservableObject {
-    @Published var values: [String: Float] = [:]
+final class Levels {
+    private var views: [String: WeakMeter] = [:]
+    var values: [String: Float] = [:]
+
+    func attach(_ view: MeterLayerView, key: String) {
+        views[key] = WeakMeter(view: view)
+        view.level = values[key] ?? 0
+    }
+
+    func set(_ key: String, _ value: Float) {
+        values[key] = value
+        views[key]?.view?.level = value
+    }
+}
+
+private struct WeakMeter {
+    weak var view: MeterLayerView?
 }
 
 @MainActor
@@ -23,6 +38,8 @@ final class Model: ObservableObject {
     let levels = Levels()
     private var held: [String: Float] = [:]
     private var timer: Timer?
+    private var meterTimer: Timer?
+    private var meters: SharedMeters?
     private var busy = false
     private let link = EngineLink()
     let offlineSample: Bool
@@ -31,21 +48,42 @@ final class Model: ObservableObject {
         offlineSample = sample != nil
         if let sample {
             snapshot = sample
-            for (k, v) in sample.stripPeaks { held["s\(k)"] = v }
-            for (k, v) in sample.busPeaks { held["b\(k)"] = v }
-            for (k, v) in sample.outputPeaks { held["o\(k)"] = v }
-            levels.values = held
+            held = ["s0": 0.3, "s1": 0.08, "b0": 0.25, "b1": 0.06, "o0": 0.25, "o1": 0.9]
+            for (key, value) in held { levels.set(key, value) }
         }
     }
 
     func start() {
         guard !offlineSample, timer == nil else { return }
-        let made = Timer(timeInterval: 1.0 / 20, repeats: true) { [weak self] _ in
+        // Common modes: a default timer stops while the mouse is held down.
+        let state = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.poll() }
         }
-        // Common modes: a default timer stops while the mouse is held down.
-        RunLoop.main.add(made, forMode: .common)
-        timer = made
+        RunLoop.main.add(state, forMode: .common)
+        timer = state
+        let meter = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.readMeters() }
+        }
+        RunLoop.main.add(meter, forMode: .common)
+        meterTimer = meter
+        poll()
+    }
+
+    private func readMeters() {
+        if meters == nil { meters = SharedMeters(create: false) }
+        guard let meters else { return }
+        let s = snapshot.settings
+        func take(_ key: String, _ index: Int) {
+            let next = max(meters.values[index], (held[key] ?? 0) * 0.9)
+            let value = next < 0.00001 ? 0 : next
+            if abs((held[key] ?? 0) - value) > 0.00001 {
+                held[key] = value
+                levels.set(key, value)
+            }
+        }
+        for strip in s.strips { take("s\(strip.slot)", MeterLayout.strip(strip.slot)) }
+        for bus in s.buses { take("b\(bus.slot)", MeterLayout.bus(bus.slot)) }
+        for output in s.outputs { take("o\(output.slot)", MeterLayout.output(output.slot)) }
     }
 
     private func poll() {
@@ -65,32 +103,9 @@ final class Model: ObservableObject {
         }
     }
 
-    /// Only a real change of state reaches SwiftUI. Meters change all the time and
-    /// the rest almost never.
+    /// Only a real change of state reaches SwiftUI.
     private func publish(_ snap: Snapshot) {
-        var quiet = snap
-        quiet.stripPeaks = [:]
-        quiet.busPeaks = [:]
-        quiet.outputPeaks = [:]
-        if quiet != snapshot { snapshot = quiet }
-        update("s", snap.stripPeaks)
-        update("b", snap.busPeaks)
-        update("o", snap.outputPeaks)
-        var moved = false
-        for (key, value) in held where abs((levels.values[key] ?? 0) - value) > 0.00001 {
-            moved = true
-            _ = key
-            break
-        }
-        if moved { levels.values = held }
-    }
-
-    private func update(_ prefix: String, _ peaks: [Int: Float]) {
-        for (slot, peak) in peaks {
-            let key = "\(prefix)\(slot)"
-            let next = max(peak, (held[key] ?? 0) * 0.82) // falls about 20 dB a second
-            held[key] = next < 0.00001 ? 0 : next
-        }
+        if snap != snapshot { snapshot = snap }
     }
 
     private var levelPending: [String: [String]] = [:]
@@ -158,10 +173,10 @@ extension Snapshot {
         s.settings.strips = [re20, pr30, desktop]
         s.settings.buses[0].outputSends = [Send(to: 0, gain: 1)]
         s.settings.buses[1].outputSends = [Send(to: 1, gain: 1)]
-        s.stripPeaks = [0: 0.3, 1: 0.08, 2: 0]
-        s.busPeaks = [0: 0.25, 1: 0.06]
-        s.outputPeaks = [0: 0.25, 1: 0.9]
         s.offline = ["Headphones"]
+        s.silent = ["PR30"]
+        s.defaultOutput = "M2"
+        s.defaultInput = "M2"
         s.devices = [DeviceRow(uid: "m2", name: "M2", transport: "USB", inputs: 2, outputs: 2),
             DeviceRow(uid: "sp", name: "Mac Studio Speakers", transport: "Built-in", inputs: 0, outputs: 2)]
         s.virtuals = [VirtualRow(slot: 0, isOutput: true, name: "Desktop"), VirtualRow(slot: 1, isOutput: false, name: "Stream Mic")]

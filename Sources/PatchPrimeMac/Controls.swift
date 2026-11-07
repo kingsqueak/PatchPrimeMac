@@ -27,7 +27,22 @@ final class MeterLayerView: NSView {
 
     required init?(coder: NSCoder) { nil }
 
-    var level: Float = 0 { didSet { place() } }
+    var level: Float = 0 {
+        didSet {
+            let shown = Int(fraction(level) * 200)
+            if shown != lastShown {
+                lastShown = shown
+                place()
+            }
+        }
+    }
+
+    private var lastShown = -1
+
+    private func fraction(_ level: Float) -> CGFloat {
+        let db = level > 0 ? 20 * log10(level) : -90
+        return CGFloat(max(0, min(1, (db + 60) / 60)))
+    }
 
     override func layout() {
         super.layout()
@@ -38,8 +53,7 @@ final class MeterLayerView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         let height = bounds.height
-        let db = level > 0 ? 20 * log10(level) : -90
-        let shown = CGFloat(max(0, min(1, (db + 60) / 60)))
+        let shown = fraction(level)
         fill.frame = CGRect(x: 0, y: 0, width: bounds.width, height: height)
         let mask = fill.mask ?? CALayer()
         mask.backgroundColor = NSColor.white.cgColor
@@ -56,12 +70,20 @@ struct Meter: NSViewRepresentable {
     func updateNSView(_ view: MeterLayerView, context: Context) { view.level = level }
 }
 
-/// Watches only the meter store, so nothing else redraws when levels move.
-struct LiveMeter: View {
-    @ObservedObject var levels: Levels
+/// A meter wired straight to its level. SwiftUI places it once and then leaves it alone.
+struct LiveMeter: NSViewRepresentable {
+    var levels: Levels
     var key: String
 
-    var body: some View { Meter(level: levels.values[key] ?? 0) }
+    func makeNSView(context: Context) -> MeterLayerView {
+        let view = MeterLayerView()
+        levels.attach(view, key: key)
+        return view
+    }
+
+    func updateNSView(_ view: MeterLayerView, context: Context) {
+        levels.attach(view, key: key)
+    }
 }
 
 /// A vertical fader in decibels. Reports while dragging; double-click returns to 0 dB.

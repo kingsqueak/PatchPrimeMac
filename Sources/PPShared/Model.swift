@@ -118,6 +118,8 @@ public struct Settings: Codable, Equatable, Sendable {
     public var hardwareLimit: Float = 0.5
     /// Last known rate for each device, by UID, so a device locks within seconds.
     public var savedRates: [String: Double] = [:]
+    /// The device whose clock to follow. None means the Patch Prime clock.
+    public var clockDevice: DeviceSignature?
 
     public init() {}
 

@@ -16,6 +16,7 @@ let package = Package(
             linkerSettings: [.linkedFramework("CoreAudio")]),
         .target(
             name: "PPShared",
+            dependencies: ["PPCore"],
             path: "Sources/PPShared",
             swiftSettings: [.swiftLanguageMode(.v5)]),
         .executableTarget(

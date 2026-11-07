@@ -81,6 +81,10 @@ struct PPDevice
     std::array<std::atomic<Route *>, kRoutesPerDevice> outputs{};
     std::atomic<uint64_t> cycles{0};
     std::atomic<float> writtenPeak{0};
+    // This device's clock, for steering the engine's: a seqlock, written once a cycle.
+    std::atomic<uint32_t> markSeq{0};
+    std::atomic<double> markSeconds{0};
+    std::atomic<double> markSample{0};
 };
 
 struct PPEngine
@@ -117,6 +121,10 @@ OSStatus deviceProc(AudioObjectID, const AudioTimeStamp *now, const AudioBufferL
 {
     auto *d = static_cast<PPDevice *>(user);
     const double seconds = double(now->mHostTime) * d->engine->secPerTick;
+    d->markSeq.fetch_add(1, std::memory_order_acq_rel);
+    d->markSeconds.store(seconds, std::memory_order_relaxed);
+    d->markSample.store(now->mSampleTime, std::memory_order_relaxed);
+    d->markSeq.fetch_add(1, std::memory_order_acq_rel);
     for (UInt32 i = 0; i < out->mNumberBuffers; ++i) {
         std::memset(out->mBuffers[i].mData, 0, out->mBuffers[i].mDataByteSize);
     }
@@ -497,6 +505,27 @@ PPEngineStats pp_engine_stats(PPEngine *e)
         }
     }
     return s;
+}
+
+int pp_engine_device_clock(PPEngine *e, unsigned int device, double *seconds, double *sample)
+{
+    std::lock_guard lock(e->control);
+    for (const auto &d : e->devices) {
+        if (d->id != device) {
+            continue;
+        }
+        for (int tries = 0; tries < 8; ++tries) {
+            const uint32_t seq = d->markSeq.load(std::memory_order_acquire);
+            const double s = d->markSeconds.load(std::memory_order_relaxed);
+            const double f = d->markSample.load(std::memory_order_relaxed);
+            if ((seq & 1) == 0 && seq == d->markSeq.load(std::memory_order_acquire) && s > 0) {
+                *seconds = s;
+                *sample = f;
+                return 1;
+            }
+        }
+    }
+    return 0;
 }
 
 double pp_engine_input_ratio_ppm(PPEngine *e, int input)

@@ -42,9 +42,12 @@ public struct Snapshot: Codable, Sendable, Equatable {
     public var devices: [DeviceRow] = []
     public var virtuals: [VirtualRow] = []
     public var offline: [String] = []
-    public var stripPeaks: [Int: Float] = [:]
-    public var busPeaks: [Int: Float] = [:]
-    public var outputPeaks: [Int: Float] = [:]
+    /// Strips with a working route that are delivering exact zeros, which real inputs
+    /// never do: permission refused, or a channel with nothing on it.
+    public var silent: [String] = []
+    public var defaultOutput = ""
+    public var defaultInput = ""
+    public var clockText = "Patch Prime"
     public var underruns: UInt64 = 0
     public var overruns: UInt64 = 0
     public var relocks: UInt64 = 0

@@ -25,6 +25,17 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     var offline: Set<String> = []
     let rateTimer = DispatchSource.makeTimerSource(queue: .main)
     var pendingSave: DispatchWorkItem?
+    let meterTimer = DispatchSource.makeTimerSource(queue: .main)
+    let clockTimer = DispatchSource.makeTimerSource(queue: .main)
+    let signalSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+    var sharedMeters = SharedMeters(create: true)
+    var peaks = [Float](repeating: 0, count: MeterLayout.count)
+    var lastSound: [Int: Date] = [:]
+    var boundSince: [Int: Date] = [:]
+    var lastRateReading: [String: Double] = [:]
+    var clockMarks: [(Double, Double)] = []
+    var clockPpm = 0.0
+    var clockText = "Patch Prime"
 
     func start() {
         let loaded = store.load()
@@ -37,7 +48,17 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             self?.refreshDevices()
         }
         // A dispatch timer: this process runs on dispatchMain, so a Timer would never fire.
-        rateTimer.schedule(deadline: .now() + 30, repeating: 60)
+        meterTimer.schedule(deadline: .now(), repeating: 1.0 / 30)
+        meterTimer.setEventHandler { [weak self] in self?.updateMeters() }
+        meterTimer.resume()
+        clockTimer.schedule(deadline: .now(), repeating: 0.25)
+        clockTimer.setEventHandler { [weak self] in self?.steerClock() }
+        clockTimer.resume()
+        signal(SIGTERM, SIG_IGN)
+        signalSource.setEventHandler { [weak self] in self?.shutDown() }
+        signalSource.resume()
+        setDriverRate(ppm: 0)
+        rateTimer.schedule(deadline: .now() + 120, repeating: 60)
         rateTimer.setEventHandler { [weak self] in self?.saveRates() }
         rateTimer.resume()
     }
@@ -105,6 +126,8 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
                     case let .device(signature, left, right):
                         if let device = resolve(signature), bindInput(core, slot, device, left, right) {
                             boundInputs[slot] = wanted
+                            boundSince[slot] = Date()
+                            lastSound[slot] = nil
                         }
                     }
                 }
@@ -172,19 +195,122 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         return pp_engine_bind_input_device(core, Int32(slot), device.id, Int32(left), Int32(right), saved) == 0
     }
 
+    /// A rate is saved only when two readings a minute apart agree, so a controller
+    /// still settling can't store a wrong value.
     func saveRates() {
         guard let core else { return }
         var changed = false
         for strip in settings.strips {
-            if case let .device(signature, _, _) = strip.source, let device = resolve(signature) {
+            if case let .device(signature, _, _) = strip.source, let device = resolve(signature),
+                settings.clockDevice == nil {
+                let uid = device.signature.uid
                 let ppm = pp_engine_input_ratio_ppm(core, Int32(strip.slot))
-                if ppm != 0, abs((settings.savedRates[device.signature.uid] ?? 0) - ppm) > 0.5 {
-                    settings.savedRates[device.signature.uid] = ppm
+                if let last = lastRateReading[uid], ppm != 0, abs(last - ppm) < 1,
+                    abs((settings.savedRates[uid] ?? 0) - ppm) > 0.5 {
+                    settings.savedRates[uid] = ppm
                     changed = true
                 }
+                lastRateReading[uid] = ppm
             }
         }
         if changed { try? store.save(settings) }
+    }
+
+    func updateMeters() {
+        guard let core, let mixer = pp_engine_mixer(core) else { return }
+        let now = Date()
+        for strip in settings.strips {
+            let m = pp_mixer_read_input_meter(mixer, Int32(strip.slot))
+            let peak = max(m.peakLeft, m.peakRight)
+            peaks[MeterLayout.strip(strip.slot)] = peak
+            if peak > 0 { lastSound[strip.slot] = now }
+        }
+        for bus in settings.buses {
+            let m = pp_mixer_read_bus_meter(mixer, Int32(bus.slot))
+            peaks[MeterLayout.bus(bus.slot)] = max(m.peakLeft, m.peakRight)
+        }
+        for output in settings.outputs {
+            let m = pp_mixer_read_output_meter(mixer, Int32(output.slot))
+            peaks[MeterLayout.output(output.slot)] = max(m.peakLeft, m.peakRight)
+        }
+        if let shared = sharedMeters {
+            peaks.withUnsafeBufferPointer { shared.values.update(from: $0.baseAddress!, count: MeterLayout.count) }
+        }
+    }
+
+    func silentStrips() -> [String] {
+        let now = Date()
+        return settings.strips.filter { strip in
+            guard case .device = strip.source, !strip.muted, boundInputs[strip.slot] != nil,
+                let since = boundSince[strip.slot], now.timeIntervalSince(since) > 3
+            else { return false }
+            let heard = lastSound[strip.slot] ?? .distantPast
+            return now.timeIntervalSince(heard) > 3
+        }.map(\.label)
+    }
+
+    /// Follows the chosen device's clock, if there is one: 4 readings a second, a 20 s
+    /// fit, and never faster than 2 ppm a second, so nobody hears it move. If the device
+    /// goes away, the same slew takes the driver back to free running.
+    func steerClock() {
+        guard let core else { return }
+        var want = 0.0
+        var text = "Patch Prime"
+        if let wanted = settings.clockDevice {
+            if let device = resolve(wanted) {
+                var seconds = 0.0, sample = 0.0
+                if pp_engine_device_clock(core, device.id, &seconds, &sample) == 1 {
+                    if let last = clockMarks.last, seconds <= last.0 || sample < last.1 { clockMarks = [] }
+                    clockMarks.append((seconds, sample))
+                    clockMarks.removeAll { seconds - $0.0 > 20 }
+                    if clockMarks.count >= 20, let fit = fitRate(clockMarks) {
+                        want = fit
+                        text = String(format: "%@, %.1f ppm", device.signature.name, want)
+                    } else {
+                        text = "\(device.signature.name), measuring"
+                        want = clockPpm
+                    }
+                } else {
+                    clockMarks = []
+                    text = "Patch Prime (\(wanted.name) isn't in use)"
+                }
+            } else {
+                clockMarks = []
+                text = "Patch Prime (\(wanted.name) is offline)"
+            }
+        } else {
+            clockMarks = []
+        }
+        clockText = text
+        let step = 2.0 * 0.25
+        let next = clockPpm + max(-step, min(step, want - clockPpm))
+        if abs(next - clockPpm) > 0.01 {
+            clockPpm = next
+            setDriverRate(ppm: clockPpm)
+        }
+    }
+
+    func fitRate(_ marks: [(Double, Double)]) -> Double? {
+        let n = Double(marks.count)
+        let x0 = marks[0].0, y0 = marks[0].1
+        var sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0
+        for (t, f) in marks {
+            let x = t - x0, y = f - y0
+            sx += x
+            sy += y
+            sxx += x * x
+            sxy += x * y
+        }
+        let d = n * sxx - sx * sx
+        guard d > 0 else { return nil }
+        return ((n * sxy - sx * sy) / d / 48000 - 1) * 1e6
+    }
+
+    func shutDown() {
+        pendingSave?.perform()
+        setDriverRate(ppm: 0)
+        SharedMeters.removeName()
+        exit(0)
     }
 
     // MARK: Commands
@@ -227,6 +353,10 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         }
         guard let device = devices.first(where: { $0.signature.name == w[1] && !$0.signature.uid.hasPrefix("PatchPrimeMac.") }) else {
             return (nil, "no device called \"\(w[1])\"")
+        }
+        let available = max(device.inputs, device.outputs)
+        guard left >= 1, right >= 1, left <= available, right <= available else {
+            return (nil, "\(w[1]) has \(available) channels, so channel \(max(left, right)) doesn't exist")
         }
         return (.device(device.signature, left: left - 1, right: right - 1), nil)
     }
@@ -344,6 +474,45 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
                 break
             }
             return commit(next, "done", later: verb == "gain")
+        case "clock" where args.count == 1:
+            if args.first == "patchprime" {
+                next.clockDevice = nil
+                return commit(next, "clock: Patch Prime")
+            }
+            guard let device = devices.first(where: { $0.signature.name == args.first && !$0.signature.uid.hasPrefix("PatchPrimeMac.") }) else {
+                return Reply(ok: false, text: "no device called \"\(args.first!)\"")
+            }
+            if device.signature.transport == "Bluetooth" {
+                return Reply(ok: false, text: "a Bluetooth device's clock isn't steady enough to follow")
+            }
+            next.clockDevice = device.signature
+            return commit(next, "clock: \(device.signature.name)")
+        case "default" where args.count == 2:
+            let a = Array(args)
+            guard let slot = Int(a[1]), let id = deviceForUID("PatchPrimeMac.Device.\(slot)") else {
+                return Reply(ok: false, text: "no such virtual device")
+            }
+            let ok: Bool
+            switch a[0] {
+            case "output":
+                ok = setDefaultDevice(.output, id)
+                setDefaultDevice(.systemOutput, id)
+            case "input":
+                ok = setDefaultDevice(.input, id)
+            default:
+                return Reply(ok: false, text: "default output|input <slot>")
+            }
+            return Reply(ok: ok, text: ok ? "done" : "macOS refused that")
+        case "default-device" where args.count == 2:
+            let a = Array(args)
+            guard let device = devices.first(where: { $0.signature.name == a[1] }) else {
+                return Reply(ok: false, text: "no device called \"\(a[1])\"")
+            }
+            if a[0] == "input" {
+                return Reply(ok: setDefaultDevice(.input, device.id), text: "done")
+            }
+            setDefaultDevice(.systemOutput, device.id)
+            return Reply(ok: setDefaultDevice(.output, device.id), text: "done")
         case "hardware" where args.count == 1:
             next.hardwareOutputEnabled = args.first == "on"
             return commit(next, "hardware output \(next.hardwareOutputEnabled ? "ON" : "off")")
@@ -362,6 +531,8 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             bus-add <label>
             route strip <n> bus <n> <gain> | route strip <n> out <n> <gain> | route bus <n> out <n> <gain>
             gain strip|bus|out <n> <linear> | mute strip|bus|out <n> on|off
+            clock patchprime | clock <device name>
+            default output|input <virtual slot> | default-device output|input <device name>
             strip-remove <n> | bus-remove <n> | out-remove <n>
             virtual-list | virtual-add <slot> out|in <name> | virtual-rename <slot> <name> | virtual-remove <slot>
             """)
@@ -386,19 +557,11 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             guard parts.count == 3, let slot = Int(parts[0]) else { return nil }
             return VirtualRow(slot: slot, isOutput: parts[1] == "out", name: parts[2])
         }
-        if let core, let mixer = pp_engine_mixer(core) {
-            for s in settings.strips {
-                let m = pp_mixer_read_input_meter(mixer, Int32(s.slot))
-                snap.stripPeaks[s.slot] = max(m.peakLeft, m.peakRight)
-            }
-            for b in settings.buses {
-                let m = pp_mixer_read_bus_meter(mixer, Int32(b.slot))
-                snap.busPeaks[b.slot] = max(m.peakLeft, m.peakRight)
-            }
-            for o in settings.outputs {
-                let m = pp_mixer_read_output_meter(mixer, Int32(o.slot))
-                snap.outputPeaks[o.slot] = max(m.peakLeft, m.peakRight)
-            }
+        snap.silent = silentStrips()
+        snap.clockText = clockText
+        snap.defaultOutput = deviceName(defaultDevice(.output))
+        snap.defaultInput = deviceName(defaultDevice(.input))
+        if let core {
             let stats = pp_engine_stats(core)
             snap.underruns = stats.underruns
             snap.overruns = stats.overruns
@@ -419,17 +582,17 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         lines.append(String(format: "cycles %llu, underruns %llu, overruns %llu, re-locks %llu, longest gap %.2f ms, %d devices open",
             s.cycles, s.underruns, s.overruns, s.resyncs, s.maxGapMs, s.devices))
         if let note { lines.append("NOTE: \(note)") }
-        let mixer = pp_engine_mixer(core)
+        lines.append("clock: \(clockText)")
         func db(_ v: Float) -> String { v > 0 ? String(format: "%.1f dBFS", 20 * log10(v)) : "silent" }
         for strip in settings.strips {
-            let state = offline.contains(strip.label) ? "OFFLINE" : db(max(pp_mixer_read_input_meter(mixer, Int32(strip.slot)).peakLeft, 0))
+            let state = offline.contains(strip.label) ? "OFFLINE" : db(peaks[MeterLayout.strip(strip.slot)])
             lines.append("strip \(strip.slot) \(strip.label): \(state)\(strip.muted ? " muted" : ""), ratio \(String(format: "%.2f", pp_engine_input_ratio_ppm(core, Int32(strip.slot)))) ppm")
         }
         for bus in settings.buses {
-            lines.append("bus \(bus.slot) \(bus.label): \(db(pp_mixer_read_bus_meter(mixer, Int32(bus.slot)).peakLeft))\(bus.muted ? " muted" : "")")
+            lines.append("bus \(bus.slot) \(bus.label): \(db(peaks[MeterLayout.bus(bus.slot)]))\(bus.muted ? " muted" : "")")
         }
         for output in settings.outputs {
-            let state = offline.contains(output.label) ? "OFFLINE" : db(pp_mixer_read_output_meter(mixer, Int32(output.slot)).peakLeft)
+            let state = offline.contains(output.label) ? "OFFLINE" : db(peaks[MeterLayout.output(output.slot)])
             lines.append("output \(output.slot) \(output.label): \(state)\(output.muted ? " muted" : "")")
         }
         return lines.joined(separator: "\n")

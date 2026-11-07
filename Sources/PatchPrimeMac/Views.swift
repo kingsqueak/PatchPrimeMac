@@ -41,6 +41,17 @@ struct StripView: View {
     var gain: Float
     var muted: Bool
     var offline: Bool
+    var silent = false
+    @State private var renaming = false
+    @State private var newName = ""
+
+    var remove: String {
+        switch stage {
+        case .input: return "strip-remove"
+        case .bus: return "bus-remove"
+        case .output: return "out-remove"
+        }
+    }
 
     var body: some View {
         let db = Decibels.fromGain(gain)
@@ -50,10 +61,11 @@ struct StripView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 3)
                 .background(stage.color.opacity(0.28), in: RoundedRectangle(cornerRadius: 4))
-            Text(offline ? "OFFLINE" : detail)
-                .font(.system(size: 9, weight: offline ? .bold : .regular))
-                .foregroundStyle(offline ? Color.red : Color.secondary)
+            Text(offline ? "OFFLINE" : silent ? "NO SIGNAL" : detail)
+                .font(.system(size: 9, weight: offline || silent ? .bold : .regular))
+                .foregroundStyle(offline ? Color.red : silent ? Color.orange : Color.secondary)
                 .lineLimit(1)
+                .help(silent ? "This input is delivering pure silence. Check that this channel has something connected, and that PatchPrimeEngine has Microphone access in System Settings." : detail)
             HStack(spacing: 6) {
                 Fader(db: db) {
                     model.sendLevel("\(stage.verb)\(slot)", ["gain", stage.verb, "\(slot)", "\(Decibels.toGain($0))"])
@@ -69,6 +81,18 @@ struct StripView: View {
         .padding(8)
         .frame(width: 92)
         .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+        .contextMenu {
+            Button("Rename…") {
+                newName = label
+                renaming = true
+            }
+            Button("Remove", role: .destructive) { model.send(remove, "\(slot)") }
+        }
+        .alert("Rename \(label)", isPresented: $renaming) {
+            TextField("Name", text: $newName)
+            Button("Cancel", role: .cancel) {}
+            Button("Rename") { model.send("label", stage.verb, "\(slot)", newName) }
+        }
     }
 }
 
@@ -98,7 +122,8 @@ struct MixerView: View {
                 section("INPUTS", .green) {
                     ForEach(s.strips, id: \.slot) { strip in
                         StripView(stage: .input, slot: strip.slot, label: strip.label, detail: detail(strip.source),
-                            gain: strip.gain, muted: strip.muted, offline: model.snapshot.offline.contains(strip.label))
+                            gain: strip.gain, muted: strip.muted, offline: model.snapshot.offline.contains(strip.label),
+                            silent: model.snapshot.silent.contains(strip.label))
                     }
                 }
                 section("MIX BUSES", .blue) {
@@ -123,13 +148,26 @@ struct MixerView: View {
 struct RoutingView: View {
     @EnvironmentObject var model: Model
 
-    private func cell(on: Bool, color: Color, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            RoundedRectangle(cornerRadius: 4)
-                .fill(on ? color : Color.primary.opacity(0.08))
-                .frame(width: 58, height: 26)
+    /// Click turns a route on at 0 dB or off. Right-click sets its level.
+    private func cell(_ gain: Float?, color: Color, _ route: [String]) -> some View {
+        Button {
+            model.send(route + [gain == nil ? "1" : "0"])
+        } label: {
+            ZStack {
+                RoundedRectangle(cornerRadius: 4).fill(gain != nil ? color : Color.primary.opacity(0.08))
+                if let gain {
+                    Text(Decibels.label(Decibels.fromGain(gain))).font(.system(size: 10, design: .monospaced)).foregroundStyle(.black)
+                }
+            }
+            .frame(width: 58, height: 26)
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            ForEach([0, -3, -6, -12, -20], id: \.self) { (db: Int) in
+                Button("\(db) dB") { model.send(route + ["\(Decibels.toGain(Float(db)))"]) }
+            }
+            Button("Off") { model.send(route + ["0"]) }
+        }
     }
 
     var body: some View {
@@ -145,12 +183,10 @@ struct RoutingView: View {
                     GridRow {
                         Text(strip.label).font(.caption.bold()).foregroundStyle(.green).gridColumnAlignment(.trailing)
                         ForEach(s.buses, id: \.slot) { bus in
-                            let on = strip.busSends.contains { $0.to == bus.slot }
-                            cell(on: on, color: .blue) { model.send("route", "strip", "\(strip.slot)", "bus", "\(bus.slot)", on ? "0" : "1") }
+                            cell(strip.busSends.first { $0.to == bus.slot }?.gain, color: .blue, ["route", "strip", "\(strip.slot)", "bus", "\(bus.slot)"])
                         }
                         ForEach(s.outputs, id: \.slot) { output in
-                            let on = strip.outputSends.contains { $0.to == output.slot }
-                            cell(on: on, color: .orange) { model.send("route", "strip", "\(strip.slot)", "out", "\(output.slot)", on ? "0" : "1") }
+                            cell(strip.outputSends.first { $0.to == output.slot }?.gain, color: .orange, ["route", "strip", "\(strip.slot)", "out", "\(output.slot)"])
                         }
                     }
                 }
@@ -159,8 +195,7 @@ struct RoutingView: View {
                         Text(bus.label).font(.caption.bold()).foregroundStyle(.blue)
                         ForEach(s.buses, id: \.slot) { _ in Color.clear.frame(width: 58, height: 26) }
                         ForEach(s.outputs, id: \.slot) { output in
-                            let on = bus.outputSends.contains { $0.to == output.slot }
-                            cell(on: on, color: .orange) { model.send("route", "bus", "\(bus.slot)", "out", "\(output.slot)", on ? "0" : "1") }
+                            cell(bus.outputSends.first { $0.to == output.slot }?.gain, color: .orange, ["route", "bus", "\(bus.slot)", "out", "\(output.slot)"])
                         }
                     }
                 }
@@ -182,6 +217,15 @@ struct SetupView: View {
     var body: some View {
         let snap = model.snapshot
         Form {
+            Section("Clock") {
+                Picker("Clock", selection: Binding(
+                    get: { snap.settings.clockDevice?.name ?? "" },
+                    set: { model.send("clock", $0.isEmpty ? "patchprime" : $0) })) {
+                    Text("Patch Prime (recommended)").tag("")
+                    ForEach(snap.devices.filter { $0.transport != "Bluetooth" && $0.transport != "Virtual" }) { Text($0.name).tag($0.name) }
+                }
+                Text(snap.clockText).font(.caption).foregroundStyle(.secondary)
+            }
             Section("Add an input") {
                 TextField("Label", text: $name)
                 Picker("Device", selection: $stripDevice) {
@@ -206,6 +250,10 @@ struct SetupView: View {
                 Button("Add Output") { model.send("out-add", outDevice, "device", outDevice, "1", "2") }
                     .disabled(outDevice.isEmpty)
             }
+            Section("System defaults") {
+                LabeledContent("Default output", value: snap.defaultOutput)
+                LabeledContent("Default input", value: snap.defaultInput)
+            }
             Section("Virtual devices") {
                 ForEach(snap.virtuals) { v in
                     HStack {
@@ -214,8 +262,12 @@ struct SetupView: View {
                         Text(v.isOutput ? "Apps play here" : "Apps record here").foregroundStyle(.secondary)
                         if v.isOutput {
                             Button("Add Strip") { model.send("strip-add", v.name, "virtual", "\(v.slot)") }
+                            Button("Make Default") { model.send("default", "output", "\(v.slot)") }
+                                .disabled(snap.defaultOutput == v.name)
                         } else {
                             Button("Add Output") { model.send("out-add", v.name, "virtual", "\(v.slot)") }
+                            Button("Make Default") { model.send("default", "input", "\(v.slot)") }
+                                .disabled(snap.defaultInput == v.name)
                         }
                         Button("Delete") { model.send("virtual-remove", "\(v.slot)") }
                     }
