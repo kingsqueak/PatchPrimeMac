@@ -22,6 +22,9 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Fetch libASPL's tags (its build takes its version from them)
+        run: git -C third_party/libASPL fetch --tags --unshallow 2>/dev/null || git -C third_party/libASPL fetch --tags
+
       - name: Install the build tools
         run: |
           brew list cmake >/dev/null 2>&1 || brew install cmake
