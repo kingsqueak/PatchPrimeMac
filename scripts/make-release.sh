@@ -35,9 +35,11 @@ mkdir -p "$out"
 
 echo "== Building (Apple Silicon, release)"
 if [ ! -f build/aspl-prefix/lib/libASPL.a ]; then
-    cmake -S third_party/libASPL -B build/aspl -G Ninja -DCMAKE_INSTALL_PREFIX="$root/build/aspl-prefix" \
+    # Makefiles, not Ninja: libASPL's custom commands give CMake 4 an empty byproduct,
+    # which Ninja rejects ("defined as an output multiple times").
+    cmake -S third_party/libASPL -B build/aspl -G "Unix Makefiles" -DCMAKE_INSTALL_PREFIX="$root/build/aspl-prefix" \
         -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0 -DCMAKE_OSX_ARCHITECTURES=arm64 -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release
-    cmake --build build/aspl --target install
+    cmake --build build/aspl --target install -j "$(sysctl -n hw.ncpu)"
 fi
 cmake -S driver -B build/release-driver -G Ninja -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_BUILD_TYPE=Release
 cmake --build build/release-driver
