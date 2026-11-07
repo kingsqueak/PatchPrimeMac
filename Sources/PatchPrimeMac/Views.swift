@@ -44,6 +44,8 @@ struct StripView: View {
     var silent = false
     var effects = 0
     var effectsOn = true
+
+    var cueKey: String { "\(stage.meterPrefix)\(slot)" }
     @State private var renaming = false
     @State private var newName = ""
 
@@ -80,6 +82,20 @@ struct StripView: View {
                 model.send("mute", stage.verb, "\(slot)", muted ? "off" : "on")
             }
             EffectsButton(stage: stage, slot: slot, label: label, count: effects, on: effectsOn)
+            if let cueTo = model.snapshot.settings.cueOutput {
+                if stage == .output && slot == cueTo {
+                    Text(model.snapshot.cued.isEmpty ? "CUE OUT" : "CUEING")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(model.snapshot.cued.isEmpty ? Color.secondary : Color.yellow)
+                        .frame(maxWidth: .infinity, minHeight: 20)
+                } else {
+                    let cued = model.snapshot.cued.contains(cueKey)
+                    ToggleButton(title: "CUE", on: cued, color: .yellow) {
+                        model.send("cue", stage.verb, "\(slot)", cued ? "off" : "on")
+                    }
+                    .help("Hear this alone on the cue output, \(model.snapshot.settings.cuePreFader ? "before" : "after") its fader")
+                }
+            }
         }
         .padding(8)
         .frame(width: 92)
@@ -120,6 +136,8 @@ struct MixerView: View {
 
     var body: some View {
         let s = model.snapshot.settings
+        VStack(spacing: 0) {
+        CueBar()
         ScrollView(.horizontal) {
             HStack(alignment: .top, spacing: 18) {
                 section("INPUTS", .green) {
@@ -146,6 +164,43 @@ struct MixerView: View {
             .padding(14)
             .frame(maxHeight: .infinity, alignment: .top)
         }
+        }
+    }
+}
+
+/// Cue (solo in the headphones): where it plays, before or after the fader, its level.
+struct CueBar: View {
+    @EnvironmentObject var model: Model
+
+    var body: some View {
+        let s = model.snapshot.settings
+        HStack(spacing: 10) {
+            Text("CUE").font(.system(size: 10, weight: .bold)).foregroundStyle(.yellow)
+            Picker("", selection: Binding(get: { s.cueOutput ?? -1 },
+                set: { model.send("cue-output", $0 < 0 ? "off" : "\($0)") })) {
+                Text("Off").tag(-1)
+                ForEach(s.outputs, id: \.slot) { Text($0.label).tag($0.slot) }
+            }
+            .labelsHidden().fixedSize()
+            .help("The output cue plays to, usually headphones. While anything is cued, it plays that instead of its own mix.")
+            if s.cueOutput != nil {
+                Picker("", selection: Binding(get: { s.cuePreFader }, set: { model.send("cue-mode", $0 ? "pfl" : "afl") })) {
+                    Text("PFL").tag(true)
+                    Text("AFL").tag(false)
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+                .help("PFL: before the fader (after a strip's effects), so a muted mic can be checked. AFL: after the fader.")
+                Spinner(info: EffectParamInfo(name: "cue", label: "Cue level", unit: "dB", min: -60, max: 12,
+                    initial: 0, kind: "linear", options: []), value: s.cueLevelDb) { model.send("cue-level", String($0)) }
+                Text("dB").font(.caption).foregroundStyle(.secondary)
+                if !model.snapshot.cued.isEmpty {
+                    Button("Clear Cue") { model.send("cue-clear") }
+                }
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 10)
     }
 }
 

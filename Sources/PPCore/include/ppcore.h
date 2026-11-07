@@ -60,6 +60,14 @@ void pp_mixer_collect(PPMixer *m);
 // that strip's sound after its effects and fader, in mono. A strip can't be its own
 // key, and keys can't go round in a loop: -1 or -2 is returned and nothing changes.
 int pp_mixer_set_key(PPMixer *m, int kind, int slot, int fromInput);
+// Cue (solo in the headphones). While anything is cued, the cue output plays what's
+// cued, at the cue level, instead of its own mix: before each one's fader (PFL; a
+// strip's after its effects) or after it (AFL). -1 turns cue off. Switching in and
+// out crossfades, and the cue output's safety limiter still applies.
+void pp_mixer_set_cue_output(PPMixer *m, int output);
+void pp_mixer_set_cue_level(PPMixer *m, float gain);
+void pp_mixer_set_cue_pre_fader(PPMixer *m, int pre);
+void pp_mixer_set_cued(PPMixer *m, int kind, int slot, int cued);
 // A limiter on an output that reaches hardware, after its own effects: true peak,
 // 1.5 ms lookahead, at ceilingDb (below 0). 0 turns it off. The hard clip in the
 // engine stays behind it as the last resort.

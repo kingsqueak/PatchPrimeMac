@@ -70,6 +70,8 @@ public struct Snapshot: Codable, Sendable, Equatable {
     public var builtInChains: [String] = []
     public var effectPresets: [String: [String]] = [:]
     public var scenes: [String] = []
+    /// What's cued now: "s0", "b1", "o2".
+    public var cued: [String] = []
 
     public init() {}
 }

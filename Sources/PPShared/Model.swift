@@ -223,6 +223,11 @@ public struct Settings: Codable, Equatable, Sendable {
     public var keepOwnRate: Set<String> = []
     /// The scene last loaded or saved, to show which is in use.
     public var lastScene: String?
+    /// Cue (solo in the headphones): the output it plays to (none: cue is off), its
+    /// level, and before the fader (PFL) or after it (AFL). What's cued isn't saved.
+    public var cueOutput: Int?
+    public var cueLevelDb: Double = 0
+    public var cuePreFader = true
 
     public static let rates: [Double] = [44100, 48000, 96000, 192000]
     public static let buffers = [32, 64, 128, 256, 512, 1024]
@@ -231,7 +236,8 @@ public struct Settings: Codable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case version, strips, buses, outputs, hardwareOutputEnabled, hardwareLimit, savedRates,
-            clockDevice, sampleRate, bufferFrames, deviceBuffers, keepOwnRate, lastScene
+            clockDevice, sampleRate, bufferFrames, deviceBuffers, keepOwnRate, lastScene,
+            cueOutput, cueLevelDb, cuePreFader
     }
 
     // By hand, so a settings file from an older version loads with defaults for what
@@ -252,6 +258,9 @@ public struct Settings: Codable, Equatable, Sendable {
         deviceBuffers = try c.decodeIfPresent([String: Int].self, forKey: .deviceBuffers) ?? d.deviceBuffers
         keepOwnRate = try c.decodeIfPresent(Set<String>.self, forKey: .keepOwnRate) ?? d.keepOwnRate
         lastScene = try c.decodeIfPresent(String.self, forKey: .lastScene)
+        cueOutput = try c.decodeIfPresent(Int.self, forKey: .cueOutput)
+        cueLevelDb = try c.decodeIfPresent(Double.self, forKey: .cueLevelDb) ?? d.cueLevelDb
+        cuePreFader = try c.decodeIfPresent(Bool.self, forKey: .cuePreFader) ?? d.cuePreFader
     }
 
     /// The buffer size to ask of a device.
@@ -320,6 +329,9 @@ public struct Settings: Codable, Equatable, Sendable {
                 seen.insert(next)
                 at = strips.first { $0.slot == next }?.effects.key
             }
+        }
+        if let cue = cueOutput, !outputs.contains(where: { $0.slot == cue }) {
+            found.append("cue plays to an output that doesn't exist")
         }
         if !Settings.rates.contains(sampleRate) {
             found.append("sample rate \(sampleRate) isn't one of 44100, 48000, 96000 or 192000")

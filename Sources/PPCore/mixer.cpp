@@ -163,6 +163,50 @@ struct PPMixer
     alignas(64) float keyAudio[PP_MAX_INPUTS][PP_MAX_BLOCK];
     std::array<bool, PP_MAX_INPUTS> keyReady{}; // realtime only: made this block
 
+    // Cue (solo in the headphones): cued strips, buses and outputs play to the cue
+    // output instead of its own mix, before their fader (PFL, after a strip's effects,
+    // as on a console) or after it (AFL). Switching in and out crossfades.
+    std::atomic<int> cueOutput{-1};
+    std::atomic<float> cueLevel{1};
+    std::atomic<bool> cuePre{true};
+    std::array<std::atomic<bool>, PP_MAX_INPUTS> cueInput{};
+    std::array<std::atomic<bool>, PP_MAX_BUSES> cueBus{};
+    std::array<std::atomic<bool>, PP_MAX_OUTPUTS> cueOut{};
+    // Each cued thing fades in and out on its own, so cueing or uncueing one never
+    // clicks, whatever else is cued.
+    std::array<Gain, PP_MAX_INPUTS> cueSendInput{};
+    std::array<Gain, PP_MAX_BUSES> cueSendBus{};
+    std::array<Gain, PP_MAX_OUTPUTS> cueSendOut{};
+    Stereo cueMix;
+    Gain cueBlend; // 0: the output's own mix, 1: cue
+    Gain cueGain;
+
+    // Whether this one is heard on cue this block (cued, or still fading out).
+    static bool cueOn(Gain &send, const std::atomic<bool> &cued, bool cueing)
+    {
+        send.target.store(cueing && cued.load(std::memory_order_relaxed) ? 1.f : 0.f, std::memory_order_relaxed);
+        return !send.idle();
+    }
+
+    void addCue(Gain &send, const Stereo &from, int frames)
+    {
+        this->send(send, from, cueMix, frames);
+    }
+
+    bool anyCued() const
+    {
+        for (const auto &c : cueInput) {
+            if (c.load(std::memory_order_relaxed)) return true;
+        }
+        for (const auto &c : cueBus) {
+            if (c.load(std::memory_order_relaxed)) return true;
+        }
+        for (const auto &c : cueOut) {
+            if (c.load(std::memory_order_relaxed)) return true;
+        }
+        return false;
+    }
+
     const float *keyFor(int from)
     {
         return from >= 0 && from < PP_MAX_INPUTS && keyReady[size_t(from)] ? keyAudio[from] : nullptr;
@@ -210,10 +254,10 @@ struct PPMixer
     // Whether a channel's effects can stop this block: muted, and the fade to silence
     // finished, so nothing after the fader can hear them. On the way back they're told
     // to forget what they held, so nothing from before the mute comes through.
-    static bool asleep(Channel &c, PPFx *fx)
+    static bool asleep(Channel &c, PPFx *fx, bool heardBeforeFader = false)
     {
         const bool silent = c.fader.current == 0.f && c.fader.target.load(std::memory_order_relaxed) == 0.f
-            && pp_fx_can_sleep(fx);
+            && pp_fx_can_sleep(fx) && !heardBeforeFader;
         if (silent) {
             c.fxAsleep = true;
             return true;
@@ -358,6 +402,26 @@ int pp_mixer_set_key(PPMixer *m, int kind, int slot, int fromInput)
     return 0;
 }
 
+void pp_mixer_set_cue_output(PPMixer *m, int output)
+{
+    m->cueOutput.store(output >= 0 && output < PP_MAX_OUTPUTS ? output : -1);
+}
+
+void pp_mixer_set_cue_level(PPMixer *m, float gain) { m->cueLevel.store(std::max(0.f, gain)); }
+
+void pp_mixer_set_cue_pre_fader(PPMixer *m, int pre) { m->cuePre.store(pre != 0); }
+
+void pp_mixer_set_cued(PPMixer *m, int kind, int slot, int cued)
+{
+    if (kind == PP_KIND_STRIP && slot >= 0 && slot < PP_MAX_INPUTS) {
+        m->cueInput[size_t(slot)].store(cued != 0);
+    } else if (kind == PP_KIND_BUS && slot >= 0 && slot < PP_MAX_BUSES) {
+        m->cueBus[size_t(slot)].store(cued != 0);
+    } else if (kind == PP_KIND_OUTPUT && slot >= 0 && slot < PP_MAX_OUTPUTS) {
+        m->cueOut[size_t(slot)].store(cued != 0);
+    }
+}
+
 void pp_mixer_set_output_safety(PPMixer *m, int output, float ceilingDb)
 {
     if (output < 0 || output >= PP_MAX_OUTPUTS) {
@@ -432,6 +496,10 @@ void pp_mixer_process(PPMixer *m, int frames)
         }
     }
     m->keyReady.fill(false);
+    const int cueTo = m->cueOutput.load(std::memory_order_relaxed);
+    const bool cueing = cueTo >= 0 && cueTo < PP_MAX_OUTPUTS && m->anyCued();
+    const bool pre = m->cuePre.load(std::memory_order_relaxed);
+    m->cueMix.clear(frames);
     std::array<bool, PP_MAX_INPUTS> done{};
     const auto &list = m->order[size_t(m->orderInUse.load(std::memory_order_acquire))];
     // In key order; then anything the list missed (it can't, but nothing may be lost).
@@ -446,11 +514,19 @@ void pp_mixer_process(PPMixer *m, int frames)
             continue;
         }
         in.updateTarget();
-        if (!PPMixer::asleep(in, m->inputFx[size_t(i)])) {
+        auto &cueSend = m->cueSendInput[size_t(i)];
+        const bool cued = PPMixer::cueOn(cueSend, m->cueInput[size_t(i)], cueing);
+        if (!PPMixer::asleep(in, m->inputFx[size_t(i)], cued && pre)) {
             pp_fx_process_keyed(m->inputFx[size_t(i)], in.audio.left, in.audio.right, frames,
                 m->keyFor(m->inputKey[size_t(i)].load(std::memory_order_relaxed)));
         }
+        if (cued && pre) {
+            m->addCue(cueSend, in.audio, frames); // after its effects, before its fader
+        }
         m->fade(in, frames);
+        if (cued && !pre) {
+            m->addCue(cueSend, in.audio, frames);
+        }
         PPMixer::measure(in, frames);
         // This strip as a key for others: mono, after its effects and fader.
         for (int f = 0; f < frames; ++f) {
@@ -473,10 +549,18 @@ void pp_mixer_process(PPMixer *m, int frames)
         if (!bus.active.load(std::memory_order_relaxed)) {
             continue;
         }
+        auto &busSend = m->cueSendBus[size_t(b)];
+        const bool busCued = PPMixer::cueOn(busSend, m->cueBus[size_t(b)], cueing);
+        if (busCued && pre) {
+            m->addCue(busSend, bus.audio, frames); // the bus's sum, before its fader
+        }
         m->fade(bus, frames);
         if (!PPMixer::asleep(bus, m->busFx[size_t(b)])) {
             pp_fx_process_keyed(m->busFx[size_t(b)], bus.audio.left, bus.audio.right, frames,
                 m->keyFor(m->busKey[size_t(b)].load(std::memory_order_relaxed)));
+        }
+        if (busCued && !pre) {
+            m->addCue(busSend, bus.audio, frames);
         }
         PPMixer::measure(bus, frames);
         for (int o = 0; o < PP_MAX_OUTPUTS; ++o) {
@@ -485,17 +569,52 @@ void pp_mixer_process(PPMixer *m, int frames)
             }
         }
     }
-    for (int o = 0; o < PP_MAX_OUTPUTS; ++o) {
-        Channel &out = m->outputs[size_t(o)];
-        if (out.active.load(std::memory_order_relaxed)) {
-            m->fade(out, frames);
-            if (!PPMixer::asleep(out, m->outputFx[size_t(o)])) {
-                pp_fx_process_keyed(m->outputFx[size_t(o)], out.audio.left, out.audio.right, frames,
-                    m->keyFor(m->outputKey[size_t(o)].load(std::memory_order_relaxed)));
-                pp_fx_process(m->safetyFx[size_t(o)], out.audio.left, out.audio.right, frames);
-            }
-            PPMixer::measure(out, frames);
+    // Outputs; the cue output last, since what it plays may include the others.
+    for (int n = 0; n <= PP_MAX_OUTPUTS; ++n) {
+        const int o = n < PP_MAX_OUTPUTS ? n : cueTo;
+        if (o < 0 || o >= PP_MAX_OUTPUTS || (n < PP_MAX_OUTPUTS && o == cueTo)) {
+            continue;
         }
+        Channel &out = m->outputs[size_t(o)];
+        if (!out.active.load(std::memory_order_relaxed)) {
+            continue;
+        }
+        auto &outSend = m->cueSendOut[size_t(o)];
+        const bool outCued = o != cueTo && PPMixer::cueOn(outSend, m->cueOut[size_t(o)], cueing);
+        if (outCued && pre) {
+            m->addCue(outSend, out.audio, frames);
+        }
+        m->fade(out, frames);
+        const bool awake = !PPMixer::asleep(out, m->outputFx[size_t(o)]);
+        if (awake) {
+            pp_fx_process_keyed(m->outputFx[size_t(o)], out.audio.left, out.audio.right, frames,
+                m->keyFor(m->outputKey[size_t(o)].load(std::memory_order_relaxed)));
+        }
+        if (outCued && !pre) {
+            m->addCue(outSend, out.audio, frames);
+        }
+        if (o == cueTo) {
+            // Crossfade between its own mix and cue, at the cue level.
+            m->cueBlend.target.store(cueing ? 1.f : 0.f, std::memory_order_relaxed);
+            m->cueGain.target.store(m->cueLevel.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            const float blendFrom = m->cueBlend.current, blendTo = m->glide(m->cueBlend, frames);
+            const float gainFrom = m->cueGain.current, gainTo = m->glide(m->cueGain, frames);
+            m->cueBlend.current = blendTo;
+            m->cueGain.current = gainTo;
+            if (blendFrom > 0.f || blendTo > 0.f) {
+                applyRamp(out.audio.left, frames, 1.f - blendFrom, 1.f - blendTo);
+                applyRamp(out.audio.right, frames, 1.f - blendFrom, 1.f - blendTo);
+                addRamp(out.audio.left, m->cueMix.left, frames, blendFrom * gainFrom, blendTo * gainTo);
+                addRamp(out.audio.right, m->cueMix.right, frames, blendFrom * gainFrom, blendTo * gainTo);
+                pp_fx_process(m->safetyFx[size_t(o)], out.audio.left, out.audio.right, frames);
+                PPMixer::measure(out, frames);
+                continue;
+            }
+        }
+        if (awake) {
+            pp_fx_process(m->safetyFx[size_t(o)], out.audio.left, out.audio.right, frames);
+        }
+        PPMixer::measure(out, frames);
     }
 }
 

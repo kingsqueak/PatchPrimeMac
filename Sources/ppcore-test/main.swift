@@ -566,5 +566,64 @@ do {
     pp_mixer_destroy(m)
 }
 
+// Cue: what's cued plays to the cue output instead of its own mix.
+do {
+    let m = pp_mixer_create(48000)!
+    for i in 0..<2 { pp_mixer_set_input_active(m, Int32(i), 1) }
+    pp_mixer_set_bus_active(m, 0, 1)
+    pp_mixer_set_output_active(m, 0, 1) // the stream
+    pp_mixer_set_output_active(m, 1, 1) // headphones, the cue output
+    pp_mixer_set_input_to_output(m, 0, 0, 1)   // mic to the stream
+    pp_mixer_set_input_to_output(m, 1, 1, 1)   // music to the headphones
+    pp_mixer_set_input_to_bus(m, 1, 0, 1)
+    pp_mixer_set_input_gain(m, 0, 0.5)
+    pp_mixer_set_effects(m, Int32(PP_KIND_STRIP), 0, "gain\t1\tgainDb=6.0206")
+    pp_mixer_set_cue_output(m, 1)
+    func run(_ blocks: Int = 40) -> (stream: Float, phones: Float) {
+        for _ in 0..<blocks {
+            fill(m, 0, 0.1, 0.1) // mic
+            fill(m, 1, 0.3, 0.3) // music
+            pp_mixer_process(m, 128)
+        }
+        return (pp_mixer_output_left(m, 0)[127], pp_mixer_output_left(m, 1)[127])
+    }
+    var r = run()
+    check("nothing cued: the headphones play their own mix", abs(r.phones - 0.3) < 1e-4, "\(r)")
+    pp_mixer_set_cued(m, Int32(PP_KIND_STRIP), 0, 1)
+    r = run()
+    check("PFL: the mic after its effects, before its fader (0.1, +6 dB)", abs(r.phones - 0.2) < 1e-4, "\(r)")
+    check("and the stream is untouched", abs(r.stream - 0.1) < 1e-4, "\(r)")
+    pp_mixer_set_cue_pre_fader(m, 0)
+    r = run()
+    check("AFL: after its fader (0.5)", abs(r.phones - 0.1) < 1e-4, "\(r)")
+    pp_mixer_set_cue_pre_fader(m, 1)
+    pp_mixer_set_input_mute(m, 0, 1)
+    r = run()
+    check("PFL hears a muted mic, effects and all", abs(r.phones - 0.2) < 1e-4 && abs(r.stream) < 1e-6, "\(r)")
+    pp_mixer_set_input_mute(m, 0, 0)
+    pp_mixer_set_cue_level(m, 0.5)
+    r = run()
+    check("the cue level", abs(r.phones - 0.1) < 1e-4, "\(r)")
+    pp_mixer_set_cue_level(m, 1)
+    pp_mixer_set_cued(m, Int32(PP_KIND_BUS), 0, 1)
+    r = run()
+    check("two things cued add up (mic 0.2, the music's bus 0.3)", abs(r.phones - 0.5) < 1e-4, "\(r)")
+    pp_mixer_set_cued(m, Int32(PP_KIND_STRIP), 0, 0)
+    pp_mixer_set_cued(m, Int32(PP_KIND_BUS), 0, 0)
+    // Switching back crossfades: no step bigger than a 10 ms glide allows.
+    var worst: Float = 0, last = pp_mixer_output_left(m, 1)[127]
+    for _ in 0..<10 {
+        fill(m, 0, 0.1, 0.1); fill(m, 1, 0.3, 0.3)
+        pp_mixer_process(m, 128)
+        for i in 0..<128 {
+            worst = max(worst, abs(pp_mixer_output_left(m, 1)[i] - last))
+            last = pp_mixer_output_left(m, 1)[i]
+        }
+    }
+    check("uncueing crossfades back, no click", worst < 0.01, "\(worst)")
+    check("and the headphones have their own mix again", abs(last - 0.3) < 1e-4, "\(last)")
+    pp_mixer_destroy(m)
+}
+
 print(failures == 0 ? "all passed" : "\(failures) FAILED")
 exit(failures == 0 ? 0 : 1)

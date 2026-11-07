@@ -45,6 +45,8 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     // Problems with how strips and outputs are wired, found afresh each time.
     var wiring: [String] = []
     let startedAt = Date().timeIntervalSince1970
+    /// What's cued: "s0", "b1", "o2". Not saved, as on Linux: cue is for the moment.
+    var cued: Set<String> = []
     // Chains measuring their levels for an open editor, and when it last asked.
     // Measuring costs a little, so it stops a couple of seconds after the asking does.
     var metering: [String: Date] = [:]
@@ -291,7 +293,21 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             pp_mixer_set_output_mute(mixer, Int32(slot), (output?.muted ?? false) ? 1 : 0)
         }
         applyEffects(mixer)
+        applyCue(mixer)
         pp_engine_enable_hardware_output(core, settings.hardwareOutputEnabled ? 1 : 0, settings.hardwareLimit)
+    }
+
+    func applyCue(_ mixer: OpaquePointer) {
+        // Cued things that are gone, or cue switched off, uncue.
+        let exists = Set(settings.strips.map { "s\($0.slot)" } + settings.buses.map { "b\($0.slot)" }
+            + settings.outputs.filter { $0.slot != settings.cueOutput }.map { "o\($0.slot)" })
+        cued = settings.cueOutput == nil ? [] : cued.intersection(exists)
+        pp_mixer_set_cue_output(mixer, Int32(settings.cueOutput ?? -1))
+        pp_mixer_set_cue_level(mixer, Float(pow(10, settings.cueLevelDb / 20)))
+        pp_mixer_set_cue_pre_fader(mixer, settings.cuePreFader ? 1 : 0)
+        for slot in 0..<Int(PP_MAX_INPUTS) { pp_mixer_set_cued(mixer, Int32(PP_KIND_STRIP), Int32(slot), cued.contains("s\(slot)") ? 1 : 0) }
+        for slot in 0..<Int(PP_MAX_BUSES) { pp_mixer_set_cued(mixer, Int32(PP_KIND_BUS), Int32(slot), cued.contains("b\(slot)") ? 1 : 0) }
+        for slot in 0..<Int(PP_MAX_OUTPUTS) { pp_mixer_set_cued(mixer, Int32(PP_KIND_OUTPUT), Int32(slot), cued.contains("o\(slot)") ? 1 : 0) }
     }
 
     func applyEffects(_ mixer: OpaquePointer) {
@@ -669,6 +685,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         case "out-remove" where args.count == 1:
             guard let slot = Int(args.first!) else { break }
             next.outputs.removeAll { $0.slot == slot }
+            if next.cueOutput == slot { next.cueOutput = nil } // cue had nowhere to play
             for i in next.strips.indices { next.strips[i].outputSends.removeAll { $0.to == slot } }
             for i in next.buses.indices { next.buses[i].outputSends.removeAll { $0.to == slot } }
             return commit(next, "output \(slot) removed")
@@ -893,6 +910,39 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
                 return Reply(ok: false, text: "fx-all strip|bus|out <n> on|off")
             }
             return commit(next, on ? "effects on" : "effects bypassed")
+        case "cue-output" where args.count == 1:
+            if args.first == "off" {
+                next.cueOutput = nil
+                return commit(next, "cue off")
+            }
+            guard let slot = Int(args.first!), next.outputs.contains(where: { $0.slot == slot }) else {
+                return Reply(ok: false, text: "cue-output <output>|off")
+            }
+            next.cueOutput = slot
+            return commit(next, "cue plays to \(next.outputs.first { $0.slot == slot }!.label)")
+        case "cue-mode" where args.count == 1:
+            guard args.first == "pfl" || args.first == "afl" else { return Reply(ok: false, text: "cue-mode pfl|afl") }
+            next.cuePreFader = args.first == "pfl"
+            return commit(next, next.cuePreFader ? "cue before the fader" : "cue after the fader")
+        case "cue-level" where args.count == 1:
+            guard let db = Double(args.first!), db >= -60, db <= 12 else { return Reply(ok: false, text: "cue-level <dB, -60 to 12>") }
+            next.cueLevelDb = db
+            return commit(next, "done", later: true)
+        case "cue" where args.count == 3:
+            // cue strip|bus|out <n> on|off
+            let a = Array(args)
+            guard let slot = Int(a[1]), let prefix = ["strip": "s", "bus": "b", "out": "o"][a[0]], a[2] == "on" || a[2] == "off" else {
+                return Reply(ok: false, text: "cue strip|bus|out <n> on|off")
+            }
+            guard settings.cueOutput != nil else { return Reply(ok: false, text: "choose a cue output first (cue-output <output>)") }
+            let key = prefix + "\(slot)"
+            if a[2] == "on" { cued.insert(key) } else { cued.remove(key) }
+            apply()
+            return Reply(ok: true, text: cued.isEmpty ? "nothing cued" : "cued: " + cued.sorted().joined(separator: ", "))
+        case "cue-clear":
+            cued = []
+            apply()
+            return Reply(ok: true, text: "nothing cued")
         case "scene-list":
             let names = scenes.names()
             return Reply(ok: true, text: names.isEmpty ? "no scenes" : names.map { $0 == settings.lastScene ? "\($0) (last loaded)" : $0 }.joined(separator: "\n"))
@@ -1054,6 +1104,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             fx-key strip|bus|out <n> <i> <strip>|none   which strip a ducker listens to
             preset-list | preset-save|preset-load strip|bus|out <n> <name> | preset-delete <name>
             scene-list | scene-save <name> | scene-load <name> | scene-delete <name>
+            cue-output <output>|off | cue-mode pfl|afl | cue-level <dB> | cue strip|bus|out <n> on|off | cue-clear
             fx-preset-save|fx-preset-load strip|bus|out <n> <i> <name> | fx-preset-delete <type> <name>
             default output|input <virtual slot> | default-device output|input <device name>
             strip-remove <n> | bus-remove <n> | out-remove <n>
@@ -1085,6 +1136,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             return row
         }
         snap.scenes = scenes.names()
+        snap.cued = cued.sorted()
         snap.chainPresets = presets.chainNames
         snap.builtInChains = BuiltInChains.names
         snap.effectPresets = presets.effectNames

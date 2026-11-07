@@ -213,6 +213,8 @@ extension Snapshot {
         s.engineRate = 48000
         s.engineBlock = 128
         s.scenes = ["Radio", "Streaming"]
+        s.settings.cueOutput = 1
+        s.cued = ["s0"]
         s.settings.lastScene = "Streaming"
         s.builtInChains = BuiltInChains.names
         s.chainPresets = ["RE20 streaming"]
