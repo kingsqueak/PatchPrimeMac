@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <atomic>
 #include <map>
 #include <sstream>
 #include <string>
@@ -97,7 +98,8 @@ struct PPFx
     std::vector<std::string> types; // what the current chain holds, in order
     double rate = 0;
     int channels = 2;
-    float keyPeak = -1; // as of the last take of levels
+    float keyPeak = -1;
+    std::atomic<bool> canSleep{true}; // read by the audio thread // as of the last take of levels
 };
 
 extern "C" {
@@ -150,6 +152,11 @@ int pp_fx_set_channels(PPFx *fx, const char *spec, double rate, int channels)
         effect->enabled = s->enabled;
         made.push_back(std::move(effect));
     }
+    bool rings = false;
+    for (const auto &e : made) {
+        rings = rings || e->ringsOut();
+    }
+    fx->canSleep.store(!rings);
     fx->processor.setChain(std::make_unique<pp::EffectChain>(std::move(made), rate, channels));
     fx->types = std::move(types);
     fx->rate = rate;
@@ -181,6 +188,22 @@ void pp_fx_process_keyed(PPFx *fx, float *left, float *right, int frames, const 
 }
 
 float pp_fx_key_peak(const PPFx *fx) { return fx->keyPeak; }
+
+void pp_fx_resume(PPFx *fx)
+{
+    pp::EffectChain *chain = fx->processor.chain();
+    if (!chain) {
+        return;
+    }
+    for (std::size_t i = 0; i < chain->size(); ++i) {
+        pp::Effect &effect = chain->at(i);
+        if (!effect.ringsOut()) {
+            effect.resume();
+        }
+    }
+}
+
+int pp_fx_can_sleep(const PPFx *fx) { return fx->canSleep.load(std::memory_order_relaxed) ? 1 : 0; }
 
 int pp_fx_active(const PPFx *fx) { return fx->processor.chain() ? 1 : 0; }
 

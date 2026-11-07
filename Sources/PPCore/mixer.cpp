@@ -74,6 +74,7 @@ struct Channel
     std::atomic<bool> muted{false};
     std::atomic<bool> active{false};
     Meter meter;
+    bool fxAsleep = false; // audio thread only: its effects stopped while muted
 
     void updateTarget()
     {
@@ -204,6 +205,24 @@ struct PPMixer
         applyRamp(c.audio.left, frames, c.fader.current, next);
         applyRamp(c.audio.right, frames, c.fader.current, next);
         c.fader.current = next;
+    }
+
+    // Whether a channel's effects can stop this block: muted, and the fade to silence
+    // finished, so nothing after the fader can hear them. On the way back they're told
+    // to forget what they held, so nothing from before the mute comes through.
+    static bool asleep(Channel &c, PPFx *fx)
+    {
+        const bool silent = c.fader.current == 0.f && c.fader.target.load(std::memory_order_relaxed) == 0.f
+            && pp_fx_can_sleep(fx);
+        if (silent) {
+            c.fxAsleep = true;
+            return true;
+        }
+        if (c.fxAsleep) {
+            pp_fx_resume(fx);
+            c.fxAsleep = false;
+        }
+        return false;
     }
 
     static void measure(Channel &c, int frames)
@@ -426,8 +445,11 @@ void pp_mixer_process(PPMixer *m, int frames)
         if (!in.active.load(std::memory_order_relaxed)) {
             continue;
         }
-        pp_fx_process_keyed(m->inputFx[size_t(i)], in.audio.left, in.audio.right, frames,
-            m->keyFor(m->inputKey[size_t(i)].load(std::memory_order_relaxed)));
+        in.updateTarget();
+        if (!PPMixer::asleep(in, m->inputFx[size_t(i)])) {
+            pp_fx_process_keyed(m->inputFx[size_t(i)], in.audio.left, in.audio.right, frames,
+                m->keyFor(m->inputKey[size_t(i)].load(std::memory_order_relaxed)));
+        }
         m->fade(in, frames);
         PPMixer::measure(in, frames);
         // This strip as a key for others: mono, after its effects and fader.
@@ -452,8 +474,10 @@ void pp_mixer_process(PPMixer *m, int frames)
             continue;
         }
         m->fade(bus, frames);
-        pp_fx_process_keyed(m->busFx[size_t(b)], bus.audio.left, bus.audio.right, frames,
-            m->keyFor(m->busKey[size_t(b)].load(std::memory_order_relaxed)));
+        if (!PPMixer::asleep(bus, m->busFx[size_t(b)])) {
+            pp_fx_process_keyed(m->busFx[size_t(b)], bus.audio.left, bus.audio.right, frames,
+                m->keyFor(m->busKey[size_t(b)].load(std::memory_order_relaxed)));
+        }
         PPMixer::measure(bus, frames);
         for (int o = 0; o < PP_MAX_OUTPUTS; ++o) {
             if (m->outputs[size_t(o)].active.load(std::memory_order_relaxed)) {
@@ -465,9 +489,11 @@ void pp_mixer_process(PPMixer *m, int frames)
         Channel &out = m->outputs[size_t(o)];
         if (out.active.load(std::memory_order_relaxed)) {
             m->fade(out, frames);
-            pp_fx_process_keyed(m->outputFx[size_t(o)], out.audio.left, out.audio.right, frames,
-                m->keyFor(m->outputKey[size_t(o)].load(std::memory_order_relaxed)));
-            pp_fx_process(m->safetyFx[size_t(o)], out.audio.left, out.audio.right, frames);
+            if (!PPMixer::asleep(out, m->outputFx[size_t(o)])) {
+                pp_fx_process_keyed(m->outputFx[size_t(o)], out.audio.left, out.audio.right, frames,
+                    m->keyFor(m->outputKey[size_t(o)].load(std::memory_order_relaxed)));
+                pp_fx_process(m->safetyFx[size_t(o)], out.audio.left, out.audio.right, frames);
+            }
             PPMixer::measure(out, frames);
         }
     }

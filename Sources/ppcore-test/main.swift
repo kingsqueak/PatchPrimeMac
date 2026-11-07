@@ -524,5 +524,47 @@ do {
         mono.seconds < stereo.seconds * 0.8)
 }
 
+// A muted strip's effects stop once the fade is done, and start clean on unmute.
+do {
+    let m = pp_mixer_create(48000)!
+    pp_mixer_set_input_active(m, 0, 1)
+    pp_mixer_set_output_active(m, 0, 1)
+    pp_mixer_set_input_to_output(m, 0, 0, 1)
+    func time(_ blocks: Int, _ value: Float) -> Double {
+        let start = DispatchTime.now().uptimeNanoseconds
+        for _ in 0..<blocks { fill(m, 0, value, value); pp_mixer_process(m, 128) }
+        return Double(DispatchTime.now().uptimeNanoseconds - start) / 1e9
+    }
+    pp_mixer_set_effects(m, Int32(PP_KIND_STRIP), 0, "denoise\t1\t\nmultiband\t1\t\neq\t1\t\ncompressor\t1\t")
+    let awake = time(1500, 0.1)
+    pp_mixer_set_input_mute(m, 0, 1)
+    _ = time(20, 0.1) // the fade
+    let muted = time(1500, 0.1)
+    check(String(format: "a muted strip's effects stop: %.2f%% of a core muted, %.2f%% playing", 100 * muted / 4, 100 * awake / 4),
+        muted < awake * 0.25)
+    // Unmute: the chain starts clean. A 50 ms delay held a tone when it was muted; none of
+    // it may come out after.
+    pp_mixer_set_input_mute(m, 0, 0)
+    pp_mixer_set_effects(m, Int32(PP_KIND_STRIP), 0, "delay\t1\ttime=50")
+    _ = time(100, 0.2)
+    pp_mixer_set_input_mute(m, 0, 1)
+    _ = time(10, 0.2) // fading out, still sounding
+    _ = time(40, 0)   // asleep, holding the tone
+    pp_mixer_set_input_mute(m, 0, 0)
+    var leaked: Float = 0
+    for _ in 0..<40 {
+        fill(m, 0, 0, 0)
+        pp_mixer_process(m, 128)
+        for i in 0..<128 { leaked = max(leaked, abs(pp_mixer_output_left(m, 0)[i])) }
+    }
+    check("nothing from before the mute comes out after it", leaked == 0, "\(leaked)")
+    // A reverb's tail would freeze and come back: a chain with one keeps running.
+    pp_mixer_set_effects(m, Int32(PP_KIND_STRIP), 0, "reverb\t1\t")
+    check("a chain with a reverb doesn't stop", pp_fx_can_sleep(pp_mixer_effects(m, Int32(PP_KIND_STRIP), 0)) == 0)
+    pp_mixer_set_effects(m, Int32(PP_KIND_STRIP), 0, "eq\t1\t")
+    check("one without may", pp_fx_can_sleep(pp_mixer_effects(m, Int32(PP_KIND_STRIP), 0)) == 1)
+    pp_mixer_destroy(m)
+}
+
 print(failures == 0 ? "all passed" : "\(failures) FAILED")
 exit(failures == 0 ? 0 : 1)

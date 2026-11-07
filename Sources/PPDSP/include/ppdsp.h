@@ -37,6 +37,12 @@ void pp_fx_process(PPFx *fx, float *left, float *right, int frames);
 // [RT] The same, with a key: another strip's sound, mono, `frames` long, for a ducker.
 // Null when there's none (a ducker then does nothing).
 void pp_fx_process_keyed(PPFx *fx, float *left, float *right, int frames, const float *key);
+// [RT] Has every effect forget what it held (filter memory, buffered sound), for a
+// chain that stopped while its strip was muted and is starting again.
+void pp_fx_resume(PPFx *fx);
+// Whether the chain may stop while nothing can hear it: not one with an effect that
+// rings out on its own (a reverb's tail), which would pick up where it froze.
+int pp_fx_can_sleep(const PPFx *fx);
 // Whether any chain is set.
 int pp_fx_active(const PPFx *fx);
 // Samples of delay the effects that are on add, together.
