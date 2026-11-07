@@ -78,24 +78,31 @@ struct StripView: View {
                 LiveMeter(levels: model.levels, key: "\(stage.meterPrefix)\(slot)").frame(width: 9)
             }
             Text(Decibels.label(db)).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
-            ToggleButton(title: "MUTE", on: muted, color: .red) {
-                model.send("mute", stage.verb, "\(slot)", muted ? "off" : "on")
-            }
-            EffectsButton(stage: stage, slot: slot, label: label, count: effects, on: effectsOn)
-            if let cueTo = model.snapshot.settings.cueOutput {
-                if stage == .output && slot == cueTo {
-                    Text(model.snapshot.cued.isEmpty ? "CUE OUT" : "CUEING")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(model.snapshot.cued.isEmpty ? Color.secondary : Color.yellow)
-                        .frame(maxWidth: .infinity, minHeight: 20)
-                } else {
-                    let cued = model.snapshot.cued.contains(cueKey)
-                    ToggleButton(title: "CUE", on: cued, color: .yellow) {
-                        model.send("cue", stage.verb, "\(slot)", cued ? "off" : "on")
+            HStack(spacing: 4) {
+                ToggleButton(title: "M", on: muted, color: .muteRed, textOn: .white) {
+                    model.send("mute", stage.verb, "\(slot)", muted ? "off" : "on")
+                }
+                .help(muted ? "Muted: click to unmute" : "Mute")
+                if let cueTo = model.snapshot.settings.cueOutput {
+                    if stage == .output && slot == cueTo {
+                        // The cue output itself: what it's playing, instead of a C.
+                        Text(model.snapshot.cued.isEmpty ? "C OUT" : "C ON")
+                            .font(.system(size: 10, weight: .bold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                            .foregroundStyle(model.snapshot.cued.isEmpty ? Color.secondary : Color.yellow)
+                            .frame(maxWidth: .infinity, minHeight: 20)
+                            .help(model.snapshot.cued.isEmpty ? "Cue plays here" : "Playing what's cued instead of its own mix")
+                    } else {
+                        let cued = model.snapshot.cued.contains(cueKey)
+                        ToggleButton(title: "C", on: cued, color: .yellow) {
+                            model.send("cue", stage.verb, "\(slot)", cued ? "off" : "on")
+                        }
+                        .help("Cue: hear this alone on the cue output, \(model.snapshot.settings.cuePreFader ? "before" : "after") its fader")
                     }
-                    .help("Hear this alone on the cue output, \(model.snapshot.settings.cuePreFader ? "before" : "after") its fader")
                 }
             }
+            EffectsButton(stage: stage, slot: slot, label: label, count: effects, on: effectsOn)
         }
         .padding(8)
         .frame(width: 92)

@@ -151,15 +151,22 @@ struct ToggleButton: View {
     var title: String
     var on: Bool
     var color: Color
+    /// The label's colour when on: white reads better on the darker colours.
+    var textOn: Color = .black
     var action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Text(title).font(.system(size: 11, weight: .semibold))
                 .frame(maxWidth: .infinity, minHeight: 20)
-                .foregroundStyle(on ? Color.black : Color.secondary)
+                .foregroundStyle(on ? textOn : Color.secondary)
                 .background(on ? color : Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
         }
         .buttonStyle(.plain)
     }
+}
+
+extension Color {
+    /// A true, dark red for mute.
+    static let muteRed = Color(.sRGB, red: 0.80, green: 0.0, blue: 0.0)
 }

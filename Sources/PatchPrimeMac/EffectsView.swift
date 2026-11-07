@@ -19,7 +19,7 @@ struct EffectsButton: View {
     @State private var open = false
 
     var body: some View {
-        ToggleButton(title: count > 0 ? (on ? "FX \(count)" : "FX OFF") : "FX", on: count > 0 && on, color: .purple) { open = true }
+        ToggleButton(title: count > 0 ? (on ? "FX \(count)" : "FX OFF") : "FX", on: count > 0 && on, color: .accentColor, textOn: .white) { open = true }
             .help("Effects on \(label)")
             .sheet(isPresented: $open) {
                 EffectsEditor(stage: stage, slot: slot, label: label) { open = false }
