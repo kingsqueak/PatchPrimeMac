@@ -109,6 +109,7 @@ public struct PresetStore: Sendable {
         guard !n.isEmpty, !effect.type.isEmpty, lastError == nil || load() else { return false }
         var stored = effect
         stored.enabled = true // a preset is settings, not whether it's bypassed
+        stored.key = nil      // nor which strip a ducker listens to
         presets.effects[effect.type, default: [:]][n] = stored
         return save()
     }
@@ -127,6 +128,7 @@ public extension EffectSetting {
         guard let info = catalog.first(where: { $0.type == type }) else { return self }
         var out = info.fresh()
         out.enabled = enabled
+        out.key = key
         for (name, value) in params {
             if let p = info.param(name) { out.params[name] = p.valid(value) }
         }

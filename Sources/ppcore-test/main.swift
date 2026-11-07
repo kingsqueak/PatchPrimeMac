@@ -439,5 +439,44 @@ do {
     pp_mixer_destroy(m)
 }
 
+// The ducker: music on one strip, turned down while another strip (its key) is loud.
+do {
+    let m = pp_mixer_create(48000)!
+    for i in 0..<4 { pp_mixer_set_input_active(m, Int32(i), 1) }
+    pp_mixer_set_output_active(m, 0, 1)
+    pp_mixer_set_input_to_output(m, 0, 0, 1) // only the music reaches the output
+    pp_mixer_set_effects(m, Int32(PP_KIND_STRIP), 0, "ducker\t1\tthreshold=-35;depth=12;attack=5;hold=50;release=100")
+    check("a strip can't duck under itself", pp_mixer_set_key(m, Int32(PP_KIND_STRIP), 0, 0) == -1)
+    // The key is strip 3, which comes later in the list: it must still run first.
+    check("a key from a later strip is taken", pp_mixer_set_key(m, Int32(PP_KIND_STRIP), 0, 3) == 0)
+    func level(voice: Float) -> Float {
+        var peak: Float = 0
+        for block in 0..<375 { // 1 s
+            fill(m, 0, 0.25, 0.25)
+            fill(m, 1, 0, 0)
+            fill(m, 2, 0, 0)
+            let l = pp_mixer_input_left(m, 3)!, r = pp_mixer_input_right(m, 3)!
+            for i in 0..<128 { l[i] = voice * Float(sin(Double(block * 128 + i) * 0.2)); r[i] = l[i] }
+            pp_mixer_process(m, 128)
+            if block > 300 { peak = max(peak, pp_mixer_output_left(m, 0)[127]) }
+        }
+        return peak
+    }
+    let quiet = level(voice: 0)
+    check("with the key quiet, the music is untouched", abs(quiet - 0.25) < 0.002, "\(quiet)")
+    let ducked = level(voice: 0.3)
+    check(String(format: "with the key loud, the music drops by the depth (%.1f dB)", 20 * log10(ducked / 0.25)),
+        abs(20 * log10(ducked / 0.25) + 12) < 0.5)
+    let back = level(voice: 0)
+    check("and comes back when the key stops", abs(back - 0.25) < 0.002, "\(back)")
+    // Loops: 0 is keyed by 3; 3 keyed by 1 is fine, then 1 keyed by 0 would close a circle.
+    check("a chain of keys is fine", pp_mixer_set_key(m, Int32(PP_KIND_STRIP), 3, 1) == 0)
+    check("a loop of keys is refused", pp_mixer_set_key(m, Int32(PP_KIND_STRIP), 1, 0) == -2)
+    check("and the music still ducks under strip 3", abs(20 * log10(level(voice: 0.3) / 0.25) + 12) < 0.5)
+    // A bus or output can be keyed by any strip.
+    check("an output can duck under a strip", pp_mixer_set_key(m, Int32(PP_KIND_OUTPUT), 0, 3) == 0)
+    pp_mixer_destroy(m)
+}
+
 print(failures == 0 ? "all passed" : "\(failures) FAILED")
 exit(failures == 0 ? 0 : 1)

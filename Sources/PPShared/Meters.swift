@@ -41,6 +41,10 @@ public final class SharedMeters: @unchecked Sendable {
         values = map.assumingMemoryBound(to: Float.self)
     }
 
+    deinit {
+        munmap(values, MeterLayout.bytes)
+    }
+
     public static func removeName() {
         _ = MeterLayout.name.withCString { shm_unlink($0) }
     }

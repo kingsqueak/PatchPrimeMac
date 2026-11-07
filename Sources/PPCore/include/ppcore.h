@@ -53,6 +53,10 @@ void pp_mixer_set_output_active(PPMixer *m, int output, int active);
 int pp_mixer_set_effects(PPMixer *m, int kind, int slot, const char *spec);
 PPFx *pp_mixer_effects(PPMixer *m, int kind, int slot);
 void pp_mixer_collect(PPMixer *m);
+// The input strip a chain's ducker listens to (its key), or -1 for none. The key is
+// that strip's sound after its effects and fader, in mono. A strip can't be its own
+// key, and keys can't go round in a loop: -1 or -2 is returned and nothing changes.
+int pp_mixer_set_key(PPMixer *m, int kind, int slot, int fromInput);
 // A limiter on an output that reaches hardware, after its own effects: true peak,
 // 1.5 ms lookahead, at ceilingDb (below 0). 0 turns it off. The hard clip in the
 // engine stays behind it as the last resort.

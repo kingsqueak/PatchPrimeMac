@@ -96,6 +96,7 @@ struct PPFx
     pp::Processor processor;
     std::vector<std::string> types; // what the current chain holds, in order
     double rate = 0;
+    float keyPeak = -1; // as of the last take of levels
 };
 
 extern "C" {
@@ -155,12 +156,19 @@ void pp_fx_collect(PPFx *fx) { fx->processor.collect(); }
 
 void pp_fx_process(PPFx *fx, float *left, float *right, int frames)
 {
+    pp_fx_process_keyed(fx, left, right, frames, nullptr);
+}
+
+void pp_fx_process_keyed(PPFx *fx, float *left, float *right, int frames, const float *key)
+{
     if (!fx->processor.chain()) {
         return;
     }
     float *planes[2] = {left, right};
-    fx->processor.process(planes, planes, 2, frames);
+    fx->processor.process(planes, planes, 2, frames, key);
 }
+
+float pp_fx_key_peak(const PPFx *fx) { return fx->keyPeak; }
 
 int pp_fx_active(const PPFx *fx) { return fx->processor.chain() ? 1 : 0; }
 
@@ -179,6 +187,7 @@ int pp_fx_take_levels(PPFx *fx, float *out, int maxEffects)
         return 0;
     }
     const auto levels = chain->takeLevels();
+    fx->keyPeak = !levels.empty() && levels.front().hasKey ? levels.front().keyPeak : -1.0F;
     const int n = std::min(int(levels.size()), maxEffects);
     for (int i = 0; i < n; ++i) {
         const auto &l = levels[std::size_t(i)];

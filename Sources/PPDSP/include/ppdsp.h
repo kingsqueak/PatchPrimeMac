@@ -30,6 +30,9 @@ int pp_fx_set(PPFx *fx, const char *spec, double rate);
 void pp_fx_collect(PPFx *fx);
 // [RT] Runs the chain on stereo audio in place. Without a chain, does nothing.
 void pp_fx_process(PPFx *fx, float *left, float *right, int frames);
+// [RT] The same, with a key: another strip's sound, mono, `frames` long, for a ducker.
+// Null when there's none (a ducker then does nothing).
+void pp_fx_process_keyed(PPFx *fx, float *left, float *right, int frames, const float *key);
 // Whether any chain is set.
 int pp_fx_active(const PPFx *fx);
 // Samples of delay the effects that are on add, together.
@@ -40,6 +43,8 @@ int pp_fx_latency(const PPFx *fx);
 // highest since the last call): 2 floats each. Returns the number of effects.
 void pp_fx_set_metering(PPFx *fx, int on);
 int pp_fx_take_levels(PPFx *fx, float *out, int maxEffects);
+// The key's peak (linear) as of the last pp_fx_take_levels, or -1 if no key came.
+float pp_fx_key_peak(const PPFx *fx);
 // An effect's own meters (gain reduction per band, say), since the last call.
 int pp_fx_take_meters(PPFx *fx, int effect, float *out, int max);
 

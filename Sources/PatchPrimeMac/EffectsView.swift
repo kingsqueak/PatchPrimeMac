@@ -108,7 +108,7 @@ struct EffectsEditor: View {
                 .fixedSize()
                 .help("Load a whole chain onto \(label), replacing what's here, or save this one")
                 Menu("Add Effect") {
-                    ForEach(model.catalog.filter { !$0.key }) { info in
+                    ForEach(model.catalog) { info in
                         Button(info.label) { model.send("fx-add", stage.verb, "\(slot)", info.type) }
                     }
                 }
@@ -230,6 +230,23 @@ struct EffectCard: View {
             .buttonStyle(.borderless)
             if info == nil {
                 Text("This effect isn't known to this version, so it's skipped.").font(.caption).foregroundStyle(.orange)
+            }
+            if effect.type == "ducker" {
+                let strips = model.snapshot.settings.strips.filter { !(stage == .input && $0.slot == slot) }
+                HStack(spacing: 8) {
+                    Text("Listens to").frame(width: 120, alignment: .leading)
+                    Picker("", selection: Binding(get: { effect.key ?? -1 },
+                        set: { model.send(words("fx-key", "\(index)", $0 < 0 ? "none" : "\($0)")) })) {
+                        Text("Nothing").tag(-1)
+                        ForEach(strips, id: \.slot) { Text($0.label).tag($0.slot) }
+                    }
+                    .labelsHidden().fixedSize()
+                    Spacer()
+                }
+                if effect.key == nil {
+                    Text("Choose the strip that should turn this one down while it's above the threshold: a mic over music, say.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
             if effect.type == "denoise", model.snapshot.engineRate > 0, model.snapshot.engineRate != 48000 {
                 Text("Noise suppression works at 48 kHz only. At \(AudioSection.khz(model.snapshot.engineRate)) it passes the sound through unchanged.")
@@ -464,6 +481,11 @@ struct EffectMeters: View {
         HStack(alignment: .top, spacing: 8) {
             labelled("IN", Bar(fill: Self.position(level.first ?? 0), width: 50, level: true))
             labelled("OUT", Bar(fill: Self.position(level.count > 1 ? level[1] : 0), width: 50, level: true))
+            if type == "ducker" {
+                let key = feed.meters.key ?? 0
+                labelled("KEY", Bar(fill: Self.position(key), width: 50, level: true))
+                    .help("The level of the strip it listens to")
+            }
             if type == "denoise" {
                 let voice = own.first ?? 0
                 labelled(String(format: "VOICE %.0f%%", voice), Bar(fill: CGFloat(min(1, max(0, voice / 100))), width: 70, color: .cyan))

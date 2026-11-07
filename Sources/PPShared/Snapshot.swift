@@ -44,6 +44,9 @@ public struct VirtualRow: Codable, Sendable, Identifiable, Hashable {
 
 public struct Snapshot: Codable, Sendable, Equatable {
     public var running = false
+    /// When this helper started. A change means it restarted, and the GUI must open
+    /// its meters again: they're a new shared memory block.
+    public var engineStarted: Double = 0
     public var note: String?
     public var settings = Settings()
     public var devices: [DeviceRow] = []

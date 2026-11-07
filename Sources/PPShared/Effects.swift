@@ -71,6 +71,8 @@ public enum EffectCatalog {
 public struct FxMeters: Codable, Sendable, Equatable {
     public var levels: [[Float]] = []
     public var meters: [[Float]] = []
+    /// The ducker's key, its peak (linear), when the chain has one.
+    public var key: Float?
     public init() {}
 }
 

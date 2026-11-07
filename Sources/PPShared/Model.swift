@@ -69,11 +69,14 @@ public struct EffectSetting: Codable, Equatable, Sendable {
     public var type: String
     public var enabled = true
     public var params: [String: Double] = [:]
+    /// For a ducker: the input strip it listens to (by slot), or none.
+    public var key: Int?
 
-    public init(type: String, enabled: Bool = true, params: [String: Double] = [:]) {
+    public init(type: String, enabled: Bool = true, params: [String: Double] = [:], key: Int? = nil) {
         self.type = type
         self.enabled = enabled
         self.params = params
+        self.key = key
     }
 
     /// The line the engine reads (see pp_fx_set): type, on, name=value pairs.
@@ -85,6 +88,10 @@ public struct EffectSetting: Codable, Equatable, Sendable {
 
 public extension Array where Element == EffectSetting {
     var spec: String { map(\.specLine).joined(separator: "\n") }
+
+    /// The strip the chain's ducker listens to: the first ducker's, as the engine has
+    /// one key per chain.
+    var key: Int? { first { $0.type == "ducker" && $0.key != nil }?.key }
 
     /// The spec with the chain's own switch applied: off bypasses every effect (with
     /// the usual crossfade) and keeps the chain, so switching back is seamless.
@@ -284,6 +291,32 @@ public struct Settings: Codable, Equatable, Sendable {
             + buses.map({ ("bus \"\($0.label)\"", $0.effects) }) + outputs.map({ ("output \"\($0.label)\"", $0.effects) })
         where effects.count > maxEffects {
             found.append("\(what) has \(effects.count) effects; the most is \(maxEffects)")
+        }
+        // Keys: a strip that exists, not the strip itself, and no circles between strips.
+        let stripSlots = Set(strips.map(\.slot))
+        for (what, effects, own) in strips.map({ ("strip \"\($0.label)\"", $0.effects, Optional($0.slot)) })
+            + buses.map({ ("bus \"\($0.label)\"", $0.effects, Int?.none) })
+            + outputs.map({ ("output \"\($0.label)\"", $0.effects, Int?.none) }) {
+            for e in effects {
+                guard let key = e.key else { continue }
+                if !stripSlots.contains(key) {
+                    found.append("\(what) has a ducker listening to a strip that doesn't exist")
+                } else if key == own {
+                    found.append("\(what) has a ducker listening to itself")
+                }
+            }
+        }
+        for strip in strips {
+            var seen: Set<Int> = [strip.slot]
+            var at = strip.effects.key
+            while let next = at, stripSlots.contains(next) {
+                if seen.contains(next) {
+                    found.append("strip \"\(strip.label)\" ducks under a strip that ducks under it: a loop")
+                    break
+                }
+                seen.insert(next)
+                at = strips.first { $0.slot == next }?.effects.key
+            }
         }
         if !Settings.rates.contains(sampleRate) {
             found.append("sample rate \(sampleRate) isn't one of 44100, 48000, 96000 or 192000")

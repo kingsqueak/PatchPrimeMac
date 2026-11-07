@@ -66,6 +66,24 @@ do {
 } catch {
     check("strips from before effects load", false, "\(error)")
 }
+do {
+    var keyed = Settings()
+    keyed.strips = [Strip(slot: 0, label: "Music", source: .virtual(slot: 0)), Strip(slot: 1, label: "Mic", source: .virtual(slot: 1))]
+    keyed.strips[0].effects = [EffectSetting(type: "ducker", key: 1)]
+    check("a ducker listening to another strip is fine", keyed.problems().isEmpty, "\(keyed.problems())")
+    check("the chain's key is its ducker's", keyed.strips[0].effects.key == 1)
+    var looped = keyed
+    looped.strips[1].effects = [EffectSetting(type: "ducker", key: 0)]
+    check("strips ducking under each other is a loop", looped.problems().contains { $0.contains("loop") }, "\(looped.problems())")
+    var itself = keyed
+    itself.strips[0].effects[0].key = 0
+    check("a strip ducking under itself is reported", itself.problems().contains { $0.contains("itself") })
+    var gone = keyed
+    gone.strips[0].effects[0].key = 7
+    check("a key that doesn't exist is reported", gone.problems().contains { $0.contains("doesn't exist") })
+    let old = #"{"type":"ducker","enabled":true,"params":{}}"#
+    check("an effect saved before keys loads with none", (try? JSONDecoder().decode(EffectSetting.self, from: Data(old.utf8)))?.key == nil)
+}
 check("rate and buffer default to 48 kHz and 128", Settings().sampleRate == 48000 && Settings().bufferFrames == 128)
 var odd = Settings()
 odd.sampleRate = 22050

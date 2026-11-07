@@ -40,6 +40,10 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     var presets = PresetStore(folder: Store.defaultFolder)
     var appliedFx: [String: String] = [:]
     var appliedSafety: [Int: Float] = [:]
+    var appliedKeys: [String: Int] = [:]
+    // Problems with how strips and outputs are wired, found afresh each time.
+    var wiring: [String] = []
+    let startedAt = Date().timeIntervalSince1970
     // Chains measuring their levels for an open editor, and when it last asked.
     // Measuring costs a little, so it stops a couple of seconds after the asking does.
     var metering: [String: Date] = [:]
@@ -115,6 +119,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         prepared = [:]
         appliedFx = [:]
         appliedSafety = [:]
+        appliedKeys = [:]
         metering = [:]
         startCoreIfPossible()
         apply()
@@ -207,9 +212,15 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     func apply() {
         guard let core, let mixer = pp_engine_mixer(core) else { return }
         offline = []
+        wiring = []
         for slot in 0..<Int(PP_MAX_INPUTS) {
             let strip = settings.strips.first { $0.slot == slot }
-            let wanted = strip.flatMap { key($0.source) }
+            var wanted = strip.flatMap { key($0.source) }
+            if let strip, case let .device(signature, _, _) = strip.source, let d = resolve(signature), d.inputs == 0 {
+                // Saved against a device's output half (an older version could do that).
+                wanted = nil
+                wiring.append("\(strip.label) is set to \(d.signature.name)'s output side, which has no inputs. Choose its input side.")
+            }
             if let strip, wanted == nil { offline.insert(strip.label) }
             if boundInputs[slot] != wanted {
                 if boundInputs[slot] != nil { pp_engine_unbind_input(core, Int32(slot)) }
@@ -249,7 +260,11 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         }
         for slot in 0..<Int(PP_MAX_OUTPUTS) {
             let output = settings.outputs.first { $0.slot == slot }
-            let wanted = output.flatMap { key($0.sink) }
+            var wanted = output.flatMap { key($0.sink) }
+            if let output, case let .device(signature, _, _) = output.sink, let d = resolve(signature), d.outputs == 0 {
+                wanted = nil
+                wiring.append("\(output.label) is set to \(d.signature.name)'s input side, which has no outputs. Choose its output side.")
+            }
             if let output, wanted == nil { offline.insert(output.label) }
             if boundOutputs[slot] != wanted {
                 if boundOutputs[slot] != nil { pp_engine_unbind_output(core, Int32(slot)) }
@@ -286,6 +301,20 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
                 appliedFx[key] = spec
             }
         }
+        func setKey(_ key: String, _ kind: Int32, _ slot: Int, _ effects: [EffectSetting]) {
+            let from = effects.key ?? -1
+            guard appliedKeys[key] != from else { return }
+            if pp_mixer_set_key(mixer, kind, Int32(slot), Int32(from)) == 0 {
+                appliedKeys[key] = from
+            }
+        }
+        // Keys off first, then on, so a change can't look like a loop half way through.
+        for strip in 0..<Int(PP_MAX_INPUTS) where (settings.strips.first { $0.slot == strip }?.effects.key ?? -1) == -1 {
+            setKey("s\(strip)", Int32(PP_KIND_STRIP), strip, [])
+        }
+        for strip in settings.strips { setKey("s\(strip.slot)", Int32(PP_KIND_STRIP), strip.slot, strip.effects) }
+        for slot in 0..<Int(PP_MAX_BUSES) { setKey("b\(slot)", Int32(PP_KIND_BUS), slot, settings.buses.first { $0.slot == slot }?.effects ?? []) }
+        for slot in 0..<Int(PP_MAX_OUTPUTS) { setKey("o\(slot)", Int32(PP_KIND_OUTPUT), slot, settings.outputs.first { $0.slot == slot }?.effects ?? []) }
         for slot in 0..<Int(PP_MAX_INPUTS) {
             let strip = settings.strips.first { $0.slot == slot }
             set("s\(slot)", Int32(PP_KIND_STRIP), slot, strip?.effects ?? [], strip?.effectsOn ?? true)
@@ -519,7 +548,10 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         return Reply(ok: true, text: done)
     }
 
-    func endpoint(_ words: ArraySlice<String>) -> (Endpoint?, String?) {
+    /// A device by name, for a strip (it must have inputs) or an output (outputs). Some
+    /// devices show up twice under one name, an input half and an output half (a USB
+    /// CODEC such as a radio's): the direction picks the right one.
+    func endpoint(_ words: ArraySlice<String>, input: Bool) -> (Endpoint?, String?) {
         let w = Array(words)
         if w.count == 2, w[0] == "virtual", let slot = Int(w[1]) {
             return (.virtual(slot: slot), nil)
@@ -527,10 +559,12 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         guard w.count == 4, w[0] == "device", let left = Int(w[2]), let right = Int(w[3]) else {
             return (nil, "expected: device <name> <left> <right>, or virtual <slot>. Channels count from 1.")
         }
-        guard let device = devices.first(where: { $0.signature.name == w[1] && !$0.signature.uid.hasPrefix("PatchPrimeMac.") }) else {
-            return (nil, "no device called \"\(w[1])\"")
+        let named = devices.filter { $0.signature.name == w[1] && !$0.signature.uid.hasPrefix("PatchPrimeMac.") }
+        guard !named.isEmpty else { return (nil, "no device called \"\(w[1])\"") }
+        guard let device = named.first(where: { input ? $0.inputs > 0 : $0.outputs > 0 }) else {
+            return (nil, "\(w[1]) has no \(input ? "inputs" : "outputs")")
         }
-        let available = max(device.inputs, device.outputs)
+        let available = input ? device.inputs : device.outputs
         guard left >= 1, right >= 1, left <= available, right <= available else {
             return (nil, "\(w[1]) has \(available) channels, so channel \(max(left, right)) doesn't exist")
         }
@@ -577,14 +611,34 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             }
             return Reply(ok: true, text: lines.joined(separator: "\n"))
         case "strip-add" where args.count >= 2:
-            let (source, error) = endpoint(args.dropFirst())
+            let (source, error) = endpoint(args.dropFirst(), input: true)
             guard let source else { return Reply(ok: false, text: error ?? "bad source") }
             guard let slot = nextSlot(next.strips.map(\.slot), Int(PP_MAX_INPUTS)) else { return Reply(ok: false, text: "no strips left") }
             next.strips.append(Strip(slot: slot, label: args.first!, source: source))
             return commit(next, "strip \(slot) added")
+        case "strip-source" where args.count >= 3, "out-sink" where args.count >= 3:
+            // Points an existing strip or output at another device, keeping its sends,
+            // effects and level: strip-source <n> device <name> <left> <right>.
+            let a = Array(args)
+            guard let slot = Int(a[0]) else { break }
+            let (endpoint, error) = endpoint(args.dropFirst(), input: verb == "strip-source")
+            guard let endpoint else { return Reply(ok: false, text: error ?? "bad device") }
+            if verb == "strip-source" {
+                guard let i = next.strips.firstIndex(where: { $0.slot == slot }) else { return Reply(ok: false, text: "no strip \(slot)") }
+                next.strips[i].source = endpoint
+            } else {
+                guard let i = next.outputs.firstIndex(where: { $0.slot == slot }) else { return Reply(ok: false, text: "no output \(slot)") }
+                next.outputs[i].sink = endpoint
+            }
+            return commit(next, "done")
         case "strip-remove" where args.count == 1:
             guard let slot = Int(args.first!) else { break }
             next.strips.removeAll { $0.slot == slot }
+            // Duckers that listened to it listen to nothing now.
+            func unkey(_ chain: inout [EffectSetting]) { for i in chain.indices where chain[i].key == slot { chain[i].key = nil } }
+            for i in next.strips.indices { unkey(&next.strips[i].effects) }
+            for i in next.buses.indices { unkey(&next.buses[i].effects) }
+            for i in next.outputs.indices { unkey(&next.outputs[i].effects) }
             return commit(next, "strip \(slot) removed")
         case "bus-add" where args.count == 1:
             guard let slot = nextSlot(next.buses.map(\.slot), Int(PP_MAX_BUSES)) else { return Reply(ok: false, text: "no buses left") }
@@ -596,7 +650,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             for i in next.strips.indices { next.strips[i].busSends.removeAll { $0.to == slot } }
             return commit(next, "bus \(slot) removed")
         case "out-add" where args.count >= 2:
-            let (sink, error) = endpoint(args.dropFirst())
+            let (sink, error) = endpoint(args.dropFirst(), input: false)
             guard let sink else { return Reply(ok: false, text: error ?? "bad output") }
             guard let slot = nextSlot(next.outputs.map(\.slot), Int(PP_MAX_OUTPUTS)) else { return Reply(ok: false, text: "no outputs left") }
             next.outputs.append(Output(slot: slot, label: args.first!, sink: sink))
@@ -771,6 +825,19 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             }
             if let problem { return Reply(ok: false, text: problem) }
             return commit(next, "done", later: later)
+        case "fx-key" where args.count == 4:
+            // fx-key strip|bus|out <n> <i> <strip>|none: which strip a ducker listens to.
+            let a = Array(args)
+            guard let slot = Int(a[1]), let index = Int(a[2]) else { break }
+            let from = a[3] == "none" ? nil : Int(a[3])
+            if a[3] != "none", from == nil { return Reply(ok: false, text: "fx-key strip|bus|out <n> <i> <strip>|none") }
+            if let problem = editChain(&next, a[0], slot, { chain in
+                guard chain.indices.contains(index) else { return "no effect \(index)" }
+                guard chain[index].type == "ducker" else { return "only a ducker listens to another strip" }
+                chain[index].key = from
+                return nil
+            }) { return Reply(ok: false, text: problem) }
+            return commit(next, from.map { "listening to strip \($0)" } ?? "listening to nothing")
         case "fx-meters" where args.count == 2:
             // Each effect's level in and out (linear peaks since the last ask) and its
             // own meters (gain reduction and so on), as JSON. Measuring starts with the
@@ -787,6 +854,8 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             var levels = [Float](repeating: 0, count: 2 * maxEffects)
             let n = Int(pp_fx_take_levels(fx, &levels, Int32(maxEffects)))
             var report = FxMeters()
+            let keyPeak = pp_fx_key_peak(fx)
+            report.key = keyPeak >= 0 ? keyPeak : nil
             for i in 0..<n {
                 report.levels.append([levels[i * 2], levels[i * 2 + 1]])
                 var own = [Float](repeating: 0, count: 16)
@@ -840,7 +909,14 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             }
             guard let chain = presets.chain(name) else { return Reply(ok: false, text: "no preset called \"\(name)\"") }
             let known = chain.filter { e in catalog.contains { $0.type == e.type } }.prefix(maxEffects)
-            if let problem = editChain(&next, a[0], slot, { $0 = known.map { $0.filled(from: catalog) }; return nil }) {
+            if let problem = editChain(&next, a[0], slot, { chain in
+                chain = known.map { e in
+                    var e = e.filled(from: catalog)
+                    if a[0] == "strip", e.key == slot { e.key = nil } // it can't listen to itself
+                    return e
+                }
+                return nil
+            }) {
                 return Reply(ok: false, text: problem)
             }
             return commit(next, "loaded \"\(PresetStore.clean(name))\"")
@@ -910,6 +986,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             status | devices | state | hardware on|off
             strip-add <label> device <name> <left> <right>   channels count from 1
             strip-add <label> virtual <slot>                 audio apps play into that device
+            strip-source <n> device <name> <left> <right> | out-sink <n> ...   another device, keeping the rest
             out-add <label> device <name> <left> <right> | out-add <label> virtual <slot>
             bus-add <label>
             route strip <n> bus <n> <gain> | route strip <n> out <n> <gain> | route bus <n> out <n> <gain>
@@ -921,6 +998,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             fx-add strip|bus|out <n> <type> [position] | fx-remove ... <i> | fx-move ... <from> <to>
             fx-set strip|bus|out <n> <i> <param> <value> | fx-on strip|bus|out <n> <i> on|off
             fx-all strip|bus|out <n> on|off   every effect at once, keeping each one's switch
+            fx-key strip|bus|out <n> <i> <strip>|none   which strip a ducker listens to
             preset-list | preset-save|preset-load strip|bus|out <n> <name> | preset-delete <name>
             fx-preset-save|fx-preset-load strip|bus|out <n> <i> <name> | fx-preset-delete <type> <name>
             default output|input <virtual slot> | default-device output|input <device name>
@@ -936,7 +1014,8 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     func snapshot() -> Snapshot {
         var snap = Snapshot()
         snap.running = core != nil
-        snap.note = note
+        snap.engineStarted = startedAt
+        snap.note = ([note].compactMap { $0 } + wiring).joined(separator: "\n").nilIfEmpty
         snap.settings = settings
         snap.offline = Array(offline)
         snap.devices = devices.filter { !$0.signature.uid.hasPrefix("PatchPrimeMac.") }.map { d in
@@ -986,6 +1065,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         lines.append(String(format: "cycles %llu, underruns %llu, overruns %llu, re-locks %llu, longest gap %.2f ms, %d devices open",
             s.cycles, s.underruns, s.overruns, s.resyncs, s.maxGapMs, s.devices))
         if let note { lines.append("NOTE: \(note)") }
+        for problem in wiring { lines.append("NOTE: \(problem)") }
         lines.append("clock: \(clockText)")
         lines.append(String(format: "engine %.1f kHz, %d-frame blocks (%.2f ms)", engineRate / 1000, engineBlock,
             Double(engineBlock) / engineRate * 1000))
@@ -1034,3 +1114,7 @@ listener.delegate = engine
 listener.resume()
 DispatchQueue.main.async { engine.start() }
 dispatchMain()
+
+extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
+}

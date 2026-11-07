@@ -112,6 +112,8 @@ final class Model: ObservableObject {
 
     /// Only a real change of state reaches SwiftUI.
     private func publish(_ snap: Snapshot) {
+        // A restarted helper has made a new meters block: drop the old one and open it again.
+        if snap.engineStarted != snapshot.engineStarted { meters = nil }
         if snap != snapshot { snapshot = snap }
     }
 

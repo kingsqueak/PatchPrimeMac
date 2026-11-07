@@ -150,6 +150,22 @@ struct PPMixer
     // The safety limiter on outputs that reach hardware, after the user's effects.
     std::array<PPFx *, PP_MAX_OUTPUTS> safetyFx{};
 
+    // Keys: the input strip whose sound (after its effects and fader, in mono) a
+    // chain's ducker listens to, or -1. Inputs run in an order where a key comes before
+    // the strips it ducks: two lists, the control thread writing the one not in use.
+    std::array<std::atomic<int>, PP_MAX_INPUTS> inputKey{};
+    std::array<std::atomic<int>, PP_MAX_BUSES> busKey{};
+    std::array<std::atomic<int>, PP_MAX_OUTPUTS> outputKey{};
+    std::array<std::array<std::atomic<int8_t>, PP_MAX_INPUTS>, 2> order{};
+    std::atomic<int> orderInUse{0};
+    alignas(64) float keyAudio[PP_MAX_INPUTS][PP_MAX_BLOCK];
+    std::array<bool, PP_MAX_INPUTS> keyReady{}; // realtime only: made this block
+
+    const float *keyFor(int from)
+    {
+        return from >= 0 && from < PP_MAX_INPUTS && keyReady[size_t(from)] ? keyAudio[from] : nullptr;
+    }
+
     PPFx *fxFor(int kind, int slot)
     {
         switch (kind) {
@@ -215,6 +231,20 @@ PPMixer *pp_mixer_create(double sampleRate)
         for (auto &f : m->safetyFx) {
             f = pp_fx_create();
         }
+        for (auto &k : m->inputKey) {
+            k.store(-1);
+        }
+        for (auto &k : m->busKey) {
+            k.store(-1);
+        }
+        for (auto &k : m->outputKey) {
+            k.store(-1);
+        }
+        for (auto &list : m->order) {
+            for (int i = 0; i < PP_MAX_INPUTS; ++i) {
+                list[size_t(i)].store(int8_t(i));
+            }
+        }
     }
     return m;
 }
@@ -246,6 +276,56 @@ int pp_mixer_set_effects(PPMixer *m, int kind, int slot, const char *spec)
 }
 
 PPFx *pp_mixer_effects(PPMixer *m, int kind, int slot) { return m->fxFor(kind, slot); }
+
+int pp_mixer_set_key(PPMixer *m, int kind, int slot, int fromInput)
+{
+    if (fromInput < -1 || fromInput >= PP_MAX_INPUTS) {
+        return -1;
+    }
+    std::atomic<int> *target = nullptr;
+    if (kind == PP_KIND_STRIP && slot >= 0 && slot < PP_MAX_INPUTS) {
+        target = &m->inputKey[size_t(slot)];
+    } else if (kind == PP_KIND_BUS && slot >= 0 && slot < PP_MAX_BUSES) {
+        target = &m->busKey[size_t(slot)];
+    } else if (kind == PP_KIND_OUTPUT && slot >= 0 && slot < PP_MAX_OUTPUTS) {
+        target = &m->outputKey[size_t(slot)];
+    }
+    if (!target || (kind == PP_KIND_STRIP && fromInput == slot)) {
+        return -1;
+    }
+    if (kind != PP_KIND_STRIP) {
+        target->store(fromInput);
+        return 0;
+    }
+    // A strip's key must come before it: put the strips in an order where every key
+    // comes first, or refuse the key if there's none (a loop).
+    std::array<int, PP_MAX_INPUTS> keys{};
+    for (int i = 0; i < PP_MAX_INPUTS; ++i) {
+        keys[size_t(i)] = i == slot ? fromInput : m->inputKey[size_t(i)].load();
+    }
+    std::array<int8_t, PP_MAX_INPUTS> list{};
+    std::array<bool, PP_MAX_INPUTS> placed{};
+    int count = 0;
+    for (int pass = 0; pass < PP_MAX_INPUTS && count < PP_MAX_INPUTS; ++pass) {
+        for (int i = 0; i < PP_MAX_INPUTS; ++i) {
+            const int k = keys[size_t(i)];
+            if (!placed[size_t(i)] && (k < 0 || placed[size_t(k)])) {
+                placed[size_t(i)] = true;
+                list[size_t(count++)] = int8_t(i);
+            }
+        }
+    }
+    if (count < PP_MAX_INPUTS) {
+        return -2; // a loop: some strip would wait for itself
+    }
+    const int spare = 1 - m->orderInUse.load();
+    for (int i = 0; i < PP_MAX_INPUTS; ++i) {
+        m->order[size_t(spare)][size_t(i)].store(list[size_t(i)], std::memory_order_relaxed);
+    }
+    m->orderInUse.store(spare, std::memory_order_release);
+    target->store(fromInput);
+    return 0;
+}
 
 void pp_mixer_set_output_safety(PPMixer *m, int output, float ceilingDb)
 {
@@ -320,14 +400,29 @@ void pp_mixer_process(PPMixer *m, int frames)
             m->outputs[size_t(o)].audio.clear(frames);
         }
     }
-    for (int i = 0; i < PP_MAX_INPUTS; ++i) {
+    m->keyReady.fill(false);
+    std::array<bool, PP_MAX_INPUTS> done{};
+    const auto &list = m->order[size_t(m->orderInUse.load(std::memory_order_acquire))];
+    // In key order; then anything the list missed (it can't, but nothing may be lost).
+    for (int n = 0; n < 2 * PP_MAX_INPUTS; ++n) {
+        const int i = n < PP_MAX_INPUTS ? list[size_t(n)].load(std::memory_order_relaxed) : n - PP_MAX_INPUTS;
+        if (i < 0 || i >= PP_MAX_INPUTS || done[size_t(i)]) {
+            continue;
+        }
+        done[size_t(i)] = true;
         Channel &in = m->inputs[size_t(i)];
         if (!in.active.load(std::memory_order_relaxed)) {
             continue;
         }
-        pp_fx_process(m->inputFx[size_t(i)], in.audio.left, in.audio.right, frames);
+        pp_fx_process_keyed(m->inputFx[size_t(i)], in.audio.left, in.audio.right, frames,
+            m->keyFor(m->inputKey[size_t(i)].load(std::memory_order_relaxed)));
         m->fade(in, frames);
         PPMixer::measure(in, frames);
+        // This strip as a key for others: mono, after its effects and fader.
+        for (int f = 0; f < frames; ++f) {
+            m->keyAudio[i][f] = 0.5f * (in.audio.left[f] + in.audio.right[f]);
+        }
+        m->keyReady[size_t(i)] = true;
         for (int b = 0; b < PP_MAX_BUSES; ++b) {
             if (m->buses[size_t(b)].active.load(std::memory_order_relaxed)) {
                 m->send(m->inputToBus[i][b], in.audio, m->buses[size_t(b)].audio, frames);
@@ -345,7 +440,8 @@ void pp_mixer_process(PPMixer *m, int frames)
             continue;
         }
         m->fade(bus, frames);
-        pp_fx_process(m->busFx[size_t(b)], bus.audio.left, bus.audio.right, frames);
+        pp_fx_process_keyed(m->busFx[size_t(b)], bus.audio.left, bus.audio.right, frames,
+            m->keyFor(m->busKey[size_t(b)].load(std::memory_order_relaxed)));
         PPMixer::measure(bus, frames);
         for (int o = 0; o < PP_MAX_OUTPUTS; ++o) {
             if (m->outputs[size_t(o)].active.load(std::memory_order_relaxed)) {
@@ -357,7 +453,8 @@ void pp_mixer_process(PPMixer *m, int frames)
         Channel &out = m->outputs[size_t(o)];
         if (out.active.load(std::memory_order_relaxed)) {
             m->fade(out, frames);
-            pp_fx_process(m->outputFx[size_t(o)], out.audio.left, out.audio.right, frames);
+            pp_fx_process_keyed(m->outputFx[size_t(o)], out.audio.left, out.audio.right, frames,
+                m->keyFor(m->outputKey[size_t(o)].load(std::memory_order_relaxed)));
             pp_fx_process(m->safetyFx[size_t(o)], out.audio.left, out.audio.right, frames);
             PPMixer::measure(out, frames);
         }
