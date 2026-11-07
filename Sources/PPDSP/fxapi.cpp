@@ -5,9 +5,12 @@
 // buildChain() and updateChain() in Patch Prime's busmanager.cpp.
 
 #include "effects.h"
+#include "eq.h"
 #include "voice.h"
 #include "ppdsp.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -248,6 +251,63 @@ char *pp_fx_catalog_json(void)
 }
 
 void pp_fx_free_string(char *text) { std::free(text); }
+
+void pp_fx_eq_curve(const char *params, int band, double rate, const double *freqs, double *dbOut, int count)
+{
+    std::vector<pp::EqEffect::Band> bands;
+    for (int b = 0; b < pp::EqEffect::bandCount; ++b) {
+        bands.push_back(pp::EqEffect::defaultBand(b));
+    }
+    std::istringstream pairs(params ? params : "");
+    std::string pair;
+    while (std::getline(pairs, pair, ';')) {
+        const auto eq = pair.find('=');
+        if (eq == std::string::npos || pair.size() < 4 || pair[0] != 'b') {
+            continue;
+        }
+        const std::string name = pair.substr(0, eq);
+        std::size_t used = 0;
+        int n = 0;
+        try {
+            n = std::stoi(name.substr(1), &used);
+        } catch (...) {
+            continue;
+        }
+        if (n < 1 || n > pp::EqEffect::bandCount) {
+            continue;
+        }
+        const std::string field = name.substr(1 + used);
+        const double v = std::strtod(pair.c_str() + eq + 1, nullptr);
+        auto &b = bands[std::size_t(n - 1)];
+        if (field == "On") {
+            b.on = v >= 0.5;
+        } else if (field == "Type") {
+            b.type = static_cast<pp::EqEffect::BandType>(
+                std::clamp(int(std::lround(v)), 0, pp::EqEffect::bandTypeCount - 1));
+        } else if (field == "Freq") {
+            b.freq = std::clamp(v, pp::EqEffect::minFreq, pp::EqEffect::maxFreq);
+        } else if (field == "Gain") {
+            b.gainDb = std::clamp(v, pp::EqEffect::minGain, pp::EqEffect::maxGain);
+        } else if (field == "Q") {
+            b.q = std::clamp(v, pp::EqEffect::minQ, pp::EqEffect::maxQ);
+        }
+    }
+    std::vector<pp::EqEffect::Band> used;
+    if (band >= 1 && band <= pp::EqEffect::bandCount) {
+        auto only = bands[std::size_t(band - 1)];
+        only.on = true;
+        used.push_back(only);
+    } else {
+        for (const auto &b : bands) {
+            if (b.on) {
+                used.push_back(b);
+            }
+        }
+    }
+    for (int i = 0; i < count; ++i) {
+        dbOut[i] = pp::EqEffect::responseDb(used, freqs[i], rate);
+    }
+}
 
 void pp_fx_compressor_knob(double amount, double out[5])
 {

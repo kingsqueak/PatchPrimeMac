@@ -48,6 +48,12 @@ int pp_fx_take_meters(PPFx *fx, int effect, float *out, int max);
 // own controls start from these, so the sound doesn't jump.
 void pp_fx_compressor_knob(double amount, double out[5]);
 
+// The EQ's response in dB at each of `count` frequencies, for drawing its curve: the
+// same filters the engine runs. `params` is the effect's "name=value;..." (as in a
+// spec line); bands it doesn't mention take their defaults. `band` 1-6 gives that
+// band alone (whether or not it's on), 0 all the bands that are on.
+void pp_fx_eq_curve(const char *params, int band, double rate, const double *freqs, double *dbOut, int count);
+
 // Every built-in effect type with its label and parameters, as JSON:
 // [{"type","label","key":bool,"params":[{"name","label","unit","min","max",
 //   "initial","kind","options":[...]}]}]. Free with pp_fx_free_string.

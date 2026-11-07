@@ -65,3 +65,37 @@ public enum EffectCatalog {
         (try? JSONDecoder().decode([EffectInfo].self, from: Data(json.utf8))) ?? []
     }
 }
+
+/// What an open effects editor shows on its meters, for each effect in order: its
+/// level in and out (linear peaks since the last ask) and its own meters.
+public struct FxMeters: Codable, Sendable, Equatable {
+    public var levels: [[Float]] = []
+    public var meters: [[Float]] = []
+    public init() {}
+}
+
+/// What an effect's own meters say about its gain, as Patch Prime's effectmeters.js
+/// reads them: the reduction in dB (0 or more), or nil for an effect without one.
+public enum EffectMeterReading {
+    public static func reduction(_ type: String, _ values: [Float]) -> Float? {
+        switch type {
+        case "gate", "ducker", "limiter", "compressor", "deesser", "expander":
+            return max(0, values.first ?? 0)
+        case "multiband":
+            return max(0, values.prefix(4).max() ?? 0)
+        case "leveler":
+            return values.first // + is boost, - is cut
+        default:
+            return nil
+        }
+    }
+
+    /// The dB a full meter stands for.
+    public static func range(_ type: String) -> Float {
+        switch type {
+        case "gate", "expander": return 40
+        case "limiter", "deesser": return 12
+        default: return 24
+        }
+    }
+}

@@ -40,6 +40,9 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     var presets = PresetStore(folder: Store.defaultFolder)
     var appliedFx: [String: String] = [:]
     var appliedSafety: [Int: Float] = [:]
+    // Chains measuring their levels for an open editor, and when it last asked.
+    // Measuring costs a little, so it stops a couple of seconds after the asking does.
+    var metering: [String: Date] = [:]
     var offline: Set<String> = []
     let rateTimer = DispatchSource.makeTimerSource(queue: .main)
     var pendingSave: DispatchWorkItem?
@@ -112,6 +115,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         prepared = [:]
         appliedFx = [:]
         appliedSafety = [:]
+        metering = [:]
         startCoreIfPossible()
         apply()
     }
@@ -306,6 +310,17 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         }
     }
 
+    /// "s0", "b1", "o2" to the mixer's kind and slot.
+    func chainAddress(_ key: String) -> (Int32, Int)? {
+        guard let first = key.first, let slot = Int(key.dropFirst()) else { return nil }
+        switch first {
+        case "s": return (Int32(PP_KIND_STRIP), slot)
+        case "b": return (Int32(PP_KIND_BUS), slot)
+        case "o": return (Int32(PP_KIND_OUTPUT), slot)
+        default: return nil
+        }
+    }
+
     /// Runs `change` on the chain a command names (strip|bus|out and a slot).
     func editChain(_ settings: inout Settings, _ kind: String, _ slot: Int,
         _ change: (inout [EffectSetting]) -> String?) -> String? {
@@ -399,7 +414,16 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     /// goes away, the same slew takes the driver back to free running.
     func steerClock() {
         guard let core else { return }
-        if let mixer = pp_engine_mixer(core) { pp_mixer_collect(mixer) }
+        if let mixer = pp_engine_mixer(core) {
+            pp_mixer_collect(mixer)
+            let now = Date()
+            for (key, asked) in metering where now.timeIntervalSince(asked) > 2 {
+                if let (kind, slot) = chainAddress(key), let fx = pp_mixer_effects(mixer, kind, Int32(slot)) {
+                    pp_fx_set_metering(fx, 0)
+                }
+                metering[key] = nil
+            }
+        }
         var want = 0.0
         var text = "Patch Prime"
         if let wanted = settings.clockDevice {
@@ -747,6 +771,30 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             }
             if let problem { return Reply(ok: false, text: problem) }
             return commit(next, "done", later: later)
+        case "fx-meters" where args.count == 2:
+            // Each effect's level in and out (linear peaks since the last ask) and its
+            // own meters (gain reduction and so on), as JSON. Measuring starts with the
+            // first ask and stops when the asking does.
+            let a = Array(args)
+            guard let slot = Int(a[1]), let core, let mixer = pp_engine_mixer(core) else { break }
+            let prefix = ["strip": "s", "bus": "b", "out": "o"][a[0]] ?? ""
+            let key = prefix + "\(slot)"
+            guard let (kind, _) = chainAddress(key), let fx = pp_mixer_effects(mixer, kind, Int32(slot)) else {
+                return Reply(ok: false, text: "fx-meters strip|bus|out <n>")
+            }
+            if metering[key] == nil { pp_fx_set_metering(fx, 1) }
+            metering[key] = Date()
+            var levels = [Float](repeating: 0, count: 2 * maxEffects)
+            let n = Int(pp_fx_take_levels(fx, &levels, Int32(maxEffects)))
+            var report = FxMeters()
+            for i in 0..<n {
+                report.levels.append([levels[i * 2], levels[i * 2 + 1]])
+                var own = [Float](repeating: 0, count: 16)
+                let m = Int(pp_fx_take_meters(fx, Int32(i), &own, 16))
+                report.meters.append(Array(own.prefix(m)))
+            }
+            let data = (try? JSONEncoder().encode(report)) ?? Data()
+            return Reply(ok: true, text: String(data: data, encoding: .utf8) ?? "{}")
         case "fx-all" where args.count == 3:
             let a = Array(args)
             guard let slot = Int(a[1]), a[2] == "on" || a[2] == "off" else { break }

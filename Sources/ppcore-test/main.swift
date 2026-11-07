@@ -406,5 +406,40 @@ do {
     pp_mixer_destroy(m)
 }
 
+// The EQ curve the editor draws, from the engine's own filters.
+do {
+    let freqs: [Double] = [100, 1000, 10000]
+    var out = [Double](repeating: 0, count: 3)
+    pp_fx_eq_curve("", 0, 48000, freqs, &out, 3)
+    check("a new EQ is flat", out.allSatisfy { abs($0) < 0.01 }, "\(out)")
+    pp_fx_eq_curve("b3Gain=6;b3Freq=1000;b3Q=1", 0, 48000, freqs, &out, 3)
+    check("a +6 dB bell at 1 kHz reads +6 there and little far away",
+        abs(out[1] - 6) < 0.05 && abs(out[0]) < 0.5 && abs(out[2]) < 0.5, "\(out)")
+    pp_fx_eq_curve("b3Gain=6;b3On=0", 0, 48000, freqs, &out, 3)
+    check("a band that's off isn't in the total", abs(out[1]) < 0.01, "\(out)")
+    pp_fx_eq_curve("b3Gain=6;b3On=0", 3, 48000, freqs, &out, 3)
+    check("but drawn alone it is", abs(out[1] - 6) < 0.05, "\(out)")
+    pp_fx_eq_curve("b1Type=3;b1Freq=200", 0, 48000, freqs, &out, 3)
+    check("a low cut at 200 Hz takes 100 Hz down", out[0] < -6 && abs(out[2]) < 0.1, "\(out)")
+    // And the engine agrees with the drawing: a 1 kHz tone through the same EQ.
+    let m = pp_mixer_create(48000)!
+    pp_mixer_set_input_active(m, 0, 1)
+    pp_mixer_set_output_active(m, 0, 1)
+    pp_mixer_set_input_to_output(m, 0, 0, 1)
+    pp_mixer_set_effects(m, Int32(PP_KIND_STRIP), 0, "eq\t1\tb3Gain=6;b3Freq=1000;b3Q=1")
+    var phase = 0.0, peak: Float = 0
+    for block in 0..<400 {
+        let l = pp_mixer_input_left(m, 0)!, r = pp_mixer_input_right(m, 0)!
+        for i in 0..<128 {
+            l[i] = Float(0.1 * sin(phase)); r[i] = l[i]
+            phase += 2 * Double.pi * 1000 / 48000
+        }
+        pp_mixer_process(m, 128)
+        if block > 200 { for i in 0..<128 { peak = max(peak, pp_mixer_output_left(m, 0)[i]) } }
+    }
+    check(String(format: "the engine plays the curve: +%.2f dB at 1 kHz", 20 * log10(peak / 0.1)), abs(20 * log10(peak / 0.1) - 6) < 0.1)
+    pp_mixer_destroy(m)
+}
+
 print(failures == 0 ? "all passed" : "\(failures) FAILED")
 exit(failures == 0 ? 0 : 1)

@@ -141,6 +141,16 @@ final class Model: ObservableObject {
 
     func send(_ words: String...) { send(words) }
 
+    /// Asks the engine and hands back the reply on the main thread.
+    func ask(_ words: [String], _ done: @escaping @MainActor (Reply) -> Void) {
+        guard !offlineSample else { return }
+        let link = self.link
+        Task.detached(priority: .userInitiated) {
+            let reply = link.send(words, timeout: 1)
+            await MainActor.run { done(reply) }
+        }
+    }
+
     func send(_ words: [String]) {
         guard !offlineSample else { return }
         let link = self.link
