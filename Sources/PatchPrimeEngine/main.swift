@@ -45,6 +45,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     // Problems with how strips and outputs are wired, found afresh each time.
     var wiring: [String] = []
     let startedAt = Date().timeIntervalSince1970
+    let scanner = PluginScanner()
     /// What's cued: "s0", "b1", "o2". Not saved, as on Linux: cue is for the moment.
     var cued: Set<String> = []
     // Chains measuring their levels for an open editor, and when it last asked.
@@ -66,6 +67,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     var clockText = "Patch Prime"
 
     func start() {
+        scanner.changed = {} // the GUI polls the snapshot
         let loaded = store.load()
         settings = loaded.settings
         note = loaded.note
@@ -910,6 +912,54 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
                 return Reply(ok: false, text: "fx-all strip|bus|out <n> on|off")
             }
             return commit(next, on ? "effects on" : "effects bypassed")
+        case "plugins-list":
+            // Every plugin (the filter only marks what's hidden), with what the scan found.
+            let filter = settings.pluginFilter
+            let rows = AudioUnitCatalog.list().map { p -> PluginRow in
+                let checks = p.variants.compactMap { scanner.cache.check($0, version: p.version) }
+                let bad = checks.first { $0.status != .ok }
+                return PluginRow(entry: p, status: scanner.cache.status(p), message: bad?.message ?? "",
+                    hidden: !filter.shows(p), hasView: checks.contains { $0.hasView },
+                    latencySeconds: checks.map(\.latencySeconds).max() ?? 0)
+            }
+            let data = (try? JSONEncoder().encode(rows)) ?? Data()
+            return Reply(ok: true, text: String(data: data, encoding: .utf8) ?? "[]")
+        case "plugins-scan" where args.count == 1:
+            guard args.first == "new" || args.first == "all" else { return Reply(ok: false, text: "plugins-scan new|all") }
+            scanner.start(AudioUnitCatalog.list(), filter: settings.pluginFilter, everything: args.first == "all")
+            return Reply(ok: true, text: scanner.total == 0 ? "nothing to check" : "checking \(scanner.total) plugin variants, \(scanner.parallel) at a time")
+        case "plugins-scan-stop":
+            scanner.stop()
+            return Reply(ok: true, text: "stopped")
+        case "plugins-status":
+            let s = scanner
+            let line = s.scanning ? "scanning: \(s.done) of \(s.total); now \(s.current.joined(separator: ", "))" : "not scanning"
+            let ok = s.cache.checks.values.filter { $0.status == .ok }.count
+            let bad = s.cache.checks.values.filter { $0.status != .ok }
+            var lines = [line, "checked: \(ok) ok, \(bad.count) not"]
+            for (id, c) in s.cache.checks.sorted(by: { $0.key < $1.key }) where c.status != .ok {
+                lines.append("  \(id): \(c.status.rawValue), \(c.message)")
+            }
+            return Reply(ok: true, text: lines.joined(separator: "\n"))
+        case "plugin-filter" where args.count >= 3:
+            // plugin-filter kind|maker|category|plugin <name> hide|show
+            let a = Array(args)
+            let name = a[1..<(a.count - 1)].joined(separator: " ")
+            let hide = a.last == "hide"
+            guard a.last == "hide" || a.last == "show" else { break }
+            func change(_ set: inout Set<String>) { if hide { set.insert(name) } else { set.remove(name) } }
+            switch a[0] {
+            case "kind":
+                guard let k = PluginKind(rawValue: name) else {
+                    return Reply(ok: false, text: "kinds: " + PluginKind.allCases.map(\.rawValue).joined(separator: ", "))
+                }
+                if hide { next.pluginFilter.hiddenKinds.insert(k) } else { next.pluginFilter.hiddenKinds.remove(k) }
+            case "maker": change(&next.pluginFilter.hiddenMakers)
+            case "category": change(&next.pluginFilter.hiddenCategories)
+            case "plugin": change(&next.pluginFilter.hiddenPlugins)
+            default: return Reply(ok: false, text: "plugin-filter kind|maker|category|plugin <name> hide|show")
+            }
+            return commit(next, hide ? "hidden" : "shown")
         case "cue-output" where args.count == 1:
             if args.first == "off" {
                 next.cueOutput = nil
@@ -1105,6 +1155,8 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             preset-list | preset-save|preset-load strip|bus|out <n> <name> | preset-delete <name>
             scene-list | scene-save <name> | scene-load <name> | scene-delete <name>
             cue-output <output>|off | cue-mode pfl|afl | cue-level <dB> | cue strip|bus|out <n> on|off | cue-clear
+            plugins-list | plugins-scan new|all | plugins-scan-stop | plugins-status
+            plugin-filter kind|maker|category|plugin <name> hide|show
             fx-preset-save|fx-preset-load strip|bus|out <n> <i> <name> | fx-preset-delete <type> <name>
             default output|input <virtual slot> | default-device output|input <device name>
             strip-remove <n> | bus-remove <n> | out-remove <n>
@@ -1137,6 +1189,14 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         }
         snap.scenes = scenes.names()
         snap.cued = cued.sorted()
+        var scan = PluginScanState()
+        scan.scanning = scanner.scanning
+        scan.done = scanner.done
+        scan.total = scanner.total
+        scan.current = scanner.current
+        scan.ok = scanner.cache.checks.values.filter { $0.status == .ok }.count
+        scan.failed = scanner.cache.checks.values.filter { $0.status != .ok }.count
+        snap.pluginScan = scan
         snap.chainPresets = presets.chainNames
         snap.builtInChains = BuiltInChains.names
         snap.effectPresets = presets.effectNames

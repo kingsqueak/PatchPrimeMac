@@ -180,6 +180,47 @@ do {
     check("scenes", false, "\(error)")
 }
 
+// Plugins.
+do {
+    check("Waves names split into plugin and channels", AudioUnitCatalog.split("C1 comp (m)") == ("C1 comp", "m")
+        && AudioUnitCatalog.split("IR-L (m->s)") == ("IR-L", "m->s") && AudioUnitCatalog.split("AUNBandEQ") == ("AUNBandEQ", "")
+        && AudioUnitCatalog.split("NX (5->2)") == ("NX", "5->2") && AudioUnitCatalog.split("Mix (Live)") == ("Mix (Live)", ""))
+    let surround = PluginVariant(id: "x", channels: "5->2", name: "NX (5->2)"), monoToStereo = PluginVariant(id: "y", channels: "m->s", name: "A (m->s)")
+    check("channel counts are read from the name", surround.inputs == 5 && surround.outputs == 2 && monoToStereo.inputs == 1 && monoToStereo.outputs == 2)
+    check("a surround version doesn't fit a strip", !surround.fitsStrips && monoToStereo.fitsStrips)
+    let start = Date()
+    let all = AudioUnitCatalog.list()
+    let took = Date().timeIntervalSince(start)
+    check(String(format: "every installed AU is listed without loading any (%d in %.2f s)", all.count, took), !all.isEmpty && took < 0.5)
+    if let eq = all.first(where: { $0.maker == "Apple" && $0.name == "AUNBandEQ" }) {
+        check("an AU's id gives back its description", AudioUnitCatalog.description(eq.variants[0].id).map { AudioUnitCatalog.id($0) } == eq.variants[0].id)
+        check("Apple's metadata gives categories", eq.categories.contains("Equalizer"), "\(eq.categories)")
+    }
+    if let c1 = all.first(where: { $0.maker == "Waves" && $0.name == "C1 comp" }) {
+        check("a Waves plugin is one entry with its variants", Set(c1.variants.map(\.channels)) == ["m", "s"], "\(c1.variants)")
+        check("a mono strip gets the mono variant, a stereo one the stereo", c1.variant(channels: 1)?.channels == "m" && c1.variant(channels: 2)?.channels == "s")
+    }
+    var filter = PluginFilter()
+    let synth = PluginEntry(format: .au, maker: "X", name: "Synth", version: "1", kind: .instrument, categories: [], variants: [], hasCustomView: false)
+    let fx = PluginEntry(format: .au, maker: "X", name: "Comp", version: "1", kind: .effect, categories: ["Dynamics Processor"], variants: [], hasCustomView: false)
+    check("instruments are hidden by default, effects shown", !filter.shows(synth) && filter.shows(fx))
+    filter.hiddenMakers = ["X"]
+    check("a hidden maker hides its plugins", !filter.shows(fx))
+    filter = PluginFilter(); filter.hiddenCategories = ["Dynamics Processor"]
+    check("so does a hidden category", !filter.shows(fx))
+    var cache = PluginCache()
+    let v = PluginVariant(id: "au:aufx:abcd:Xxxx", channels: "", name: "Comp")
+    let entry = PluginEntry(format: .au, maker: "X", name: "Comp", version: "2", kind: .effect, categories: [], variants: [v], hasCustomView: false)
+    check("an unchecked plugin has no status", cache.status(entry) == nil)
+    cache.checks[v.id] = PluginCheck(status: .ok, version: "1")
+    check("a check of an older version doesn't count", cache.status(entry) == nil)
+    cache.checks[v.id] = PluginCheck(status: .crashed, version: "2")
+    check("one at this version does", cache.status(entry) == .crashed)
+    let old = #"{"strips":[]}"#
+    check("settings from before plugins load with the default filter",
+        (try? JSONDecoder().decode(Settings.self, from: Data(old.utf8)))?.pluginFilter == PluginFilter())
+}
+
 // Store.
 let folder = FileManager.default.temporaryDirectory.appendingPathComponent("ppshared-\(UUID().uuidString)")
 defer { try? FileManager.default.removeItem(at: folder) }

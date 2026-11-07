@@ -72,6 +72,39 @@ public struct Snapshot: Codable, Sendable, Equatable {
     public var scenes: [String] = []
     /// What's cued now: "s0", "b1", "o2".
     public var cued: [String] = []
+    public var pluginScan = PluginScanState()
 
     public init() {}
+}
+
+/// Where a plugin scan is.
+public struct PluginScanState: Codable, Sendable, Equatable {
+    public var scanning = false
+    public var done = 0
+    public var total = 0
+    public var current: [String] = []
+    /// Over everything in the cache.
+    public var ok = 0
+    public var failed = 0
+    public init() {}
+}
+
+/// A plugin as the browser shows it: what it is, what the scan found, and whether it's hidden.
+public struct PluginRow: Codable, Sendable, Identifiable, Hashable {
+    public var id: String { entry.id }
+    public var entry: PluginEntry
+    public var status: PluginCheck.Status?
+    public var message: String
+    public var hidden: Bool
+    public var hasView: Bool
+    public var latencySeconds: Double
+
+    public init(entry: PluginEntry, status: PluginCheck.Status?, message: String, hidden: Bool, hasView: Bool, latencySeconds: Double) {
+        self.entry = entry
+        self.status = status
+        self.message = message
+        self.hidden = hidden
+        self.hasView = hasView
+        self.latencySeconds = latencySeconds
+    }
 }

@@ -295,6 +295,7 @@ struct SetupView: View {
                 Text(snap.clockText).font(.caption).foregroundStyle(.secondary)
             }
             AudioSection(snap: snap) { words, what in pending = (words, what) }
+            PluginsSection()
             Section("Add an input") {
                 TextField("Label", text: $name)
                 Picker("Device", selection: $stripDevice) {

@@ -228,6 +228,8 @@ public struct Settings: Codable, Equatable, Sendable {
     public var cueOutput: Int?
     public var cueLevelDb: Double = 0
     public var cuePreFader = true
+    /// What the plugin browser and the scan leave out.
+    public var pluginFilter = PluginFilter()
 
     public static let rates: [Double] = [44100, 48000, 96000, 192000]
     public static let buffers = [32, 64, 128, 256, 512, 1024]
@@ -237,7 +239,7 @@ public struct Settings: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case version, strips, buses, outputs, hardwareOutputEnabled, hardwareLimit, savedRates,
             clockDevice, sampleRate, bufferFrames, deviceBuffers, keepOwnRate, lastScene,
-            cueOutput, cueLevelDb, cuePreFader
+            cueOutput, cueLevelDb, cuePreFader, pluginFilter
     }
 
     // By hand, so a settings file from an older version loads with defaults for what
@@ -261,6 +263,7 @@ public struct Settings: Codable, Equatable, Sendable {
         cueOutput = try c.decodeIfPresent(Int.self, forKey: .cueOutput)
         cueLevelDb = try c.decodeIfPresent(Double.self, forKey: .cueLevelDb) ?? d.cueLevelDb
         cuePreFader = try c.decodeIfPresent(Bool.self, forKey: .cuePreFader) ?? d.cuePreFader
+        pluginFilter = try c.decodeIfPresent(PluginFilter.self, forKey: .pluginFilter) ?? d.pluginFilter
     }
 
     /// The buffer size to ask of a device.

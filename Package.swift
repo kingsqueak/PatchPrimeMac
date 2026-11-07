@@ -49,6 +49,11 @@ let package = Package(
             path: "Sources/patchprime-ctl",
             swiftSettings: [.swiftLanguageMode(.v5)]),
         .executableTarget(
+            name: "patchprime-scan",
+            dependencies: ["PPShared"],
+            path: "Sources/patchprime-scan",
+            swiftSettings: [.swiftLanguageMode(.v5)]),
+        .executableTarget(
             name: "ppshared-test",
             dependencies: ["PPShared"],
             path: "Sources/ppshared-test"),
