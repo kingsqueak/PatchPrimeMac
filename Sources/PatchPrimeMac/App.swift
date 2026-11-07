@@ -21,11 +21,11 @@ struct PatchPrimeMacApp: App {
     @StateObject private var model = Model()
 
     init() {
-        EngineAgent.ensure()
         if let at = CommandLine.arguments.firstIndex(of: "--render"), at + 1 < CommandLine.arguments.count {
             Self.render(to: CommandLine.arguments[at + 1])
             exit(0)
         }
+        EngineAgent.ensure()
     }
 
     var body: some Scene {
@@ -126,11 +126,18 @@ struct HelpCommand: View {
 
 /// The engine's LaunchAgent, for an installed copy (the engine inside this app's
 /// bundle): written and started if it's missing or points at another copy, so the
-/// engine runs for every user who opens the app, and after the app is moved.
+/// engine runs for every user who opens the app, and after the app moves between the
+/// system's and the user's Applications folders.
 enum EngineAgent {
     static let label = "com.kingsqueak.patchprimemac.engine"
 
+    /// The engine inside this app, if this is an installed copy: in Applications (the
+    /// system's or the user's). A copy anywhere else (a build folder, an unpacked
+    /// installer, a disk image) leaves the engine that's running alone.
     static var bundledEngine: URL? {
+        let app = Bundle.main.bundleURL.standardizedFileURL.path
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        guard app == "/Applications/PatchPrimeMac.app" || app == home + "/Applications/PatchPrimeMac.app" else { return nil }
         let url = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/PatchPrimeEngine.app/Contents/MacOS/PatchPrimeEngine")
         return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
     }
