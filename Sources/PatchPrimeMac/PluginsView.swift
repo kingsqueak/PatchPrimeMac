@@ -50,6 +50,9 @@ struct PluginsSection: View {
 struct PluginBrowser: View {
     @EnvironmentObject var model: Model
     var done: () -> Void
+    /// Picking for a chain: what it's for, and what to do with the choice.
+    var pickFor: String? = nil
+    var pick: ((PluginRow) -> Void)? = nil
     @State private var rows: [PluginRow] = []
     @State private var search = ""
     @State private var showHidden = false
@@ -68,7 +71,9 @@ struct PluginBrowser: View {
     var shown: [PluginRow] {
         let words = search.lowercased().split(separator: " ")
         return rows.filter { r in
-            (showHidden || !r.hidden) && words.allSatisfy { w in
+            // Picking: only what can go on a strip and hasn't been found broken.
+            (pick == nil || (r.entry.fitsStrips && (r.status == nil || r.status == .ok) && (r.entry.kind == .effect || r.entry.kind == .musicEffect)))
+            && (showHidden || !r.hidden) && words.allSatisfy { w in
                 let hay = "\(r.entry.format.rawValue) \(r.entry.maker) \(r.entry.name) \(r.entry.categories.joined(separator: " "))".lowercased()
                 return hay.contains(w)
             }
@@ -91,7 +96,7 @@ struct PluginBrowser: View {
         let filter = model.snapshot.settings.pluginFilter
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                Text("Plugins").font(.headline)
+                Text(pickFor.map { "Add a plugin to \($0)" } ?? "Plugins").font(.headline)
                 TextField("Search maker, name or category", text: $search)
                     .textFieldStyle(.roundedBorder).frame(maxWidth: 320)
                 Toggle("Show hidden", isOn: $showHidden).toggleStyle(.checkbox)
@@ -104,7 +109,14 @@ struct PluginBrowser: View {
                 }
                 .fixedSize()
                 .help("Which kinds of plugin to list. Instruments, generators and MIDI processors don't belong on a mixer strip, so they're hidden at first.")
-                Button("Done", action: done).keyboardShortcut(.defaultAction)
+                if pick != nil {
+                    Button("Cancel", action: done).keyboardShortcut(.cancelAction)
+                    Button("Add") { add(selection) }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(selection.isEmpty)
+                } else {
+                    Button("Done", action: done).keyboardShortcut(.defaultAction)
+                }
             }
             .padding(12)
             Table(list, selection: $selection, sortOrder: $order) {
@@ -142,7 +154,7 @@ struct PluginBrowser: View {
                 }
                 .width(50)
             }
-            .contextMenu(forSelectionType: PluginRow.ID.self) { ids in
+            .contextMenu(forSelectionType: PluginRow.ID.self, menu: { ids in
                 if let id = ids.first, let r = rows.first(where: { $0.id == id }) {
                     Button(r.hidden ? "Show \(r.entry.name)" : "Hide \(r.entry.name)") {
                         model.send("plugin-filter", "plugin", r.entry.id, r.hidden ? "show" : "hide"); after()
@@ -158,18 +170,25 @@ struct PluginBrowser: View {
                         }
                     }
                 }
-            }
+            }, primaryAction: { ids in add(ids) })
             HStack {
                 Text(loading ? "Listing…" : "\(list.count) shown of \(rows.count)\(rows.filter(\.hidden).count > 0 ? ", \(rows.filter(\.hidden).count) hidden" : "")")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Text("Right-click a plugin to hide it, its maker or its category.").font(.caption).foregroundStyle(.secondary)
+                Text(pick != nil ? "Double-click a plugin to add it. Plugins not checked yet are added anyway; Scan New in Setup checks them."
+                    : "Right-click a plugin to hide it, its maker or its category.").font(.caption).foregroundStyle(.secondary)
             }
             .padding(8)
         }
         .frame(minWidth: 820, idealWidth: 900, minHeight: 480, idealHeight: 620)
         .onAppear(perform: reload)
         .onChange(of: model.snapshot.pluginScan.scanning) { _, now in if !now { reload() } }
+    }
+
+    func add(_ ids: Set<PluginRow.ID>) {
+        guard let pick, let id = ids.first, let row = rows.first(where: { $0.id == id }) else { return }
+        pick(row)
+        done()
     }
 
     /// After a filter change, list again once the helper has it.

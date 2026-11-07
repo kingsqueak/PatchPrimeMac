@@ -36,6 +36,7 @@ struct EffectsEditor: View {
     var done: () -> Void
     @State private var saving = false
     @State private var presetName = ""
+    @State private var picking = false
     @StateObject private var feed = MeterFeed()
 
     var chainOn: Bool {
@@ -108,9 +109,13 @@ struct EffectsEditor: View {
                 .fixedSize()
                 .help("Load a whole chain onto \(label), replacing what's here, or save this one")
                 Menu("Add Effect") {
-                    ForEach(model.catalog) { info in
-                        Button(info.label) { model.send("fx-add", stage.verb, "\(slot)", info.type) }
+                    Section("Built in") {
+                        ForEach(model.catalog) { info in
+                            Button(info.label) { model.send("fx-add", stage.verb, "\(slot)", info.type) }
+                        }
                     }
+                    Divider()
+                    Button("Plugins…") { picking = true }
                 }
                 .disabled(effects.count >= maxEffects)
                 .fixedSize()
@@ -136,6 +141,12 @@ struct EffectsEditor: View {
         }
         .frame(minWidth: 720, idealWidth: 720, minHeight: 520, idealHeight: 720)
         .onAppear { feed.start(model, [stage.verb, "\(slot)"]) }
+        .sheet(isPresented: $picking) {
+            PluginBrowser(done: { picking = false }, pickFor: label) { row in
+                model.send("fx-add-plugin", stage.verb, "\(slot)", row.entry.id)
+            }
+            .environmentObject(model)
+        }
         .onDisappear { feed.stop() }
         .alert("Save the chain on \(label)", isPresented: $saving) {
             TextField("Preset name", text: $presetName)
