@@ -32,6 +32,13 @@ struct PatchPrimeMacApp: App {
         // The window's minimum comes from what's in it (the full mixer or the mini view),
         // and nothing more: the remembered sizes are ours to set.
         .windowResizability(.contentMinSize)
+        .commands {
+            CommandGroup(replacing: .help) { HelpCommand() }
+        }
+        Window("PatchPrimeMac Help", id: "help") {
+            HelpView()
+        }
+        .defaultSize(width: 900, height: 640)
         MenuBarExtra("PatchPrimeMac", systemImage: "slider.vertical.3") {
             MenuContent().environmentObject(model)
         }
@@ -63,6 +70,7 @@ struct PatchPrimeMacApp: App {
         save(RoutingView(), "-routing", CGSize(width: 620, height: 300))
         save(SetupView(), "-setup", CGSize(width: 620, height: 700))
         save(MiniView {}, "-mini", CGSize(width: 170, height: 520))
+        save(HelpView(), "-help", CGSize(width: 900, height: 640))
         save(EffectsEditor(stage: .input, slot: 0, label: "RE20") {}, "-effects", CGSize(width: 720, height: 1400))
     }
 }
@@ -87,6 +95,21 @@ struct MenuContent: View {
                 openWindow(id: "mixer")
             }
         }
+        Button("Help") {
+            NSApp.activate(ignoringOtherApps: true)
+            openWindow(id: "help")
+        }
+        Divider()
         Button("Quit (audio keeps running)") { NSApp.terminate(nil) }
+    }
+}
+
+/// Help → PatchPrimeMac Help.
+struct HelpCommand: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("PatchPrimeMac Help") { openWindow(id: "help") }
+            .keyboardShortcut("?", modifiers: .command)
     }
 }
