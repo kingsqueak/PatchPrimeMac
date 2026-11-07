@@ -478,5 +478,51 @@ do {
     pp_mixer_destroy(m)
 }
 
+// A mono strip runs its effects once: the same sound as running both sides, for less.
+do {
+    let chain = ["denoise\t1\t", "eq\t1\tb1Type=3;b1Freq=90;b4Gain=2.5;b4Freq=3500", "compressor\t1\tamount=60",
+        "deesser\t1\t", "limiter\t1\tceiling=-1;truePeak=1"].joined(separator: "\n")
+    func run(mono: Bool) -> (out: [Float], seconds: Double) {
+        let m = pp_mixer_create(48000)!
+        pp_mixer_set_input_active(m, 0, 1)
+        pp_mixer_set_output_active(m, 0, 1)
+        pp_mixer_set_input_to_output(m, 0, 0, 1)
+        pp_mixer_set_input_mono(m, 0, mono ? 1 : 0)
+        pp_mixer_set_effects(m, Int32(PP_KIND_STRIP), 0, chain)
+        var seed: UInt64 = 1 // the same noise for both runs
+        func noise() -> Double {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return (Double(seed >> 11) / Double(1 << 53) - 0.5) * 0.006
+        }
+        var out: [Float] = []
+        var phase = 0.0
+        let start = DispatchTime.now().uptimeNanoseconds
+        for block in 0..<1500 { // 4 s
+            let l = pp_mixer_input_left(m, 0)!, r = pp_mixer_input_right(m, 0)!
+            for i in 0..<128 {
+                // A voice-ish tone that comes and goes, over a little noise; the same on both sides.
+                let on = (block / 100) % 2 == 0 ? 0.3 : 0.0
+                l[i] = Float(on * sin(phase) + noise())
+                r[i] = l[i]
+                phase += 2 * Double.pi * 220 / 48000
+            }
+            pp_mixer_process(m, 128)
+            if block >= 1400 {
+                out.append(contentsOf: UnsafeBufferPointer(start: pp_mixer_output_left(m, 0), count: 128))
+                for i in 0..<128 where pp_mixer_output_left(m, 0)[i] != pp_mixer_output_right(m, 0)[i] { out.append(.nan) }
+            }
+        }
+        let seconds = Double(DispatchTime.now().uptimeNanoseconds - start) / 1e9
+        pp_mixer_destroy(m)
+        return (out, seconds)
+    }
+    let stereo = run(mono: false), mono = run(mono: true)
+    check("mono: left and right come out the same", !mono.out.contains { $0.isNaN })
+    let worst = zip(stereo.out, mono.out).map { abs($0 - $1) }.max() ?? 1
+    check(String(format: "mono sounds the same as stereo (largest difference %.2g)", worst), worst < 1e-5 && stereo.out.count == mono.out.count)
+    check(String(format: "mono costs less: %.2f%% of a core against %.2f%% (with the test's own work)", 100 * mono.seconds / 4, 100 * stereo.seconds / 4),
+        mono.seconds < stereo.seconds * 0.8)
+}
+
 print(failures == 0 ? "all passed" : "\(failures) FAILED")
 exit(failures == 0 ? 0 : 1)

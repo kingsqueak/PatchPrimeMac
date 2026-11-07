@@ -52,6 +52,9 @@ void pp_mixer_set_output_active(PPMixer *m, int output, int active);
 // effects running, or -1. Call pp_mixer_collect now and then to free old chains.
 int pp_mixer_set_effects(PPMixer *m, int kind, int slot, const char *spec);
 PPFx *pp_mixer_effects(PPMixer *m, int kind, int slot);
+// A strip whose source is one channel (the same on left and right): its effects run
+// once, on one channel. Takes effect with the next pp_mixer_set_effects.
+void pp_mixer_set_input_mono(PPMixer *m, int input, int mono);
 void pp_mixer_collect(PPMixer *m);
 // The input strip a chain's ducker listens to (its key), or -1 for none. The key is
 // that strip's sound after its effects and fader, in mono. A strip can't be its own

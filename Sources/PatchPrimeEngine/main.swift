@@ -295,11 +295,12 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     }
 
     func applyEffects(_ mixer: OpaquePointer) {
-        func set(_ key: String, _ kind: Int32, _ slot: Int, _ effects: [EffectSetting], _ on: Bool = true) {
+        func set(_ key: String, _ kind: Int32, _ slot: Int, _ effects: [EffectSetting], _ on: Bool = true, _ mono: Bool = false) {
             let spec = effects.spec(on: on)
-            guard appliedFx[key] != spec else { return }
+            let marked = (mono ? "mono\n" : "") + spec
+            guard appliedFx[key] != marked else { return }
             if pp_mixer_set_effects(mixer, kind, Int32(slot), spec) >= 0 {
-                appliedFx[key] = spec
+                appliedFx[key] = marked
             }
         }
         func setKey(_ key: String, _ kind: Int32, _ slot: Int, _ effects: [EffectSetting]) {
@@ -318,7 +319,16 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         for slot in 0..<Int(PP_MAX_OUTPUTS) { setKey("o\(slot)", Int32(PP_KIND_OUTPUT), slot, settings.outputs.first { $0.slot == slot }?.effects ?? []) }
         for slot in 0..<Int(PP_MAX_INPUTS) {
             let strip = settings.strips.first { $0.slot == slot }
-            set("s\(slot)", Int32(PP_KIND_STRIP), slot, strip?.effects ?? [], strip?.effectsOn ?? true)
+            // A one-channel source runs its effects once. The cache key carries it, so
+            // switching between mono and stereo builds the chain again.
+            // Not with a reverb (it spreads a mono voice into stereo) or a leveler (it
+            // measures loudness over the channels it gets): those stay as they sounded.
+            var mono = false
+            if let strip, case let .device(_, left, right) = strip.source {
+                mono = left == right && !strip.effects.contains { $0.type == "reverb" || $0.type == "leveler" }
+            }
+            pp_mixer_set_input_mono(mixer, Int32(slot), mono ? 1 : 0)
+            set("s\(slot)", Int32(PP_KIND_STRIP), slot, strip?.effects ?? [], strip?.effectsOn ?? true, mono)
         }
         for slot in 0..<Int(PP_MAX_BUSES) {
             let bus = settings.buses.first { $0.slot == slot }

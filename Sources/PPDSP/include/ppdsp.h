@@ -26,6 +26,10 @@ void pp_fx_destroy(PPFx *fx);
 // chain is built for `rate` and swapped in without stopping audio. Returns the
 // number of effects running, or -1 if the spec couldn't be read.
 int pp_fx_set(PPFx *fx, const char *spec, double rate);
+// The same for a mono source (left and right the same): the chain runs on one
+// channel, half the work, and the result goes to both. A change between mono and
+// stereo builds a new chain.
+int pp_fx_set_channels(PPFx *fx, const char *spec, double rate, int channels);
 // Frees chains the audio thread has finished with. Call now and then.
 void pp_fx_collect(PPFx *fx);
 // [RT] Runs the chain on stereo audio in place. Without a chain, does nothing.

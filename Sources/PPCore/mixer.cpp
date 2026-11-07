@@ -145,6 +145,7 @@ struct PPMixer
     // Effects: on a strip before its fader; on a bus or output after it, with the
     // meter after the effects, so an output's meter shows what its limiter let by.
     std::array<PPFx *, PP_MAX_INPUTS> inputFx{};
+    std::array<bool, PP_MAX_INPUTS> inputMono{}; // control thread: how strips' chains are built
     std::array<PPFx *, PP_MAX_BUSES> busFx{};
     std::array<PPFx *, PP_MAX_OUTPUTS> outputFx{};
     // The safety limiter on outputs that reach hardware, after the user's effects.
@@ -272,7 +273,18 @@ void pp_mixer_destroy(PPMixer *m)
 int pp_mixer_set_effects(PPMixer *m, int kind, int slot, const char *spec)
 {
     PPFx *fx = m->fxFor(kind, slot);
-    return fx ? pp_fx_set(fx, spec, m->sampleRate) : -1;
+    if (!fx) {
+        return -1;
+    }
+    const bool mono = kind == PP_KIND_STRIP && m->inputMono[size_t(slot)];
+    return pp_fx_set_channels(fx, spec, m->sampleRate, mono ? 1 : 2);
+}
+
+void pp_mixer_set_input_mono(PPMixer *m, int input, int mono)
+{
+    if (input >= 0 && input < PP_MAX_INPUTS) {
+        m->inputMono[size_t(input)] = mono != 0;
+    }
 }
 
 PPFx *pp_mixer_effects(PPMixer *m, int kind, int slot) { return m->fxFor(kind, slot); }

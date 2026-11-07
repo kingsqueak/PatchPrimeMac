@@ -96,6 +96,7 @@ struct PPFx
     pp::Processor processor;
     std::vector<std::string> types; // what the current chain holds, in order
     double rate = 0;
+    int channels = 2;
     float keyPeak = -1; // as of the last take of levels
 };
 
@@ -105,8 +106,11 @@ PPFx *pp_fx_create(void) { return new PPFx; }
 
 void pp_fx_destroy(PPFx *fx) { delete fx; }
 
-int pp_fx_set(PPFx *fx, const char *spec, double rate)
+int pp_fx_set(PPFx *fx, const char *spec, double rate) { return pp_fx_set_channels(fx, spec, rate, 2); }
+
+int pp_fx_set_channels(PPFx *fx, const char *spec, double rate, int channels)
 {
+    channels = channels == 1 ? 1 : 2;
     std::vector<Spec> wanted;
     if (!parse(spec, wanted)) {
         return -1;
@@ -127,7 +131,7 @@ int pp_fx_set(PPFx *fx, const char *spec, double rate)
         return 0;
     }
     pp::EffectChain *current = fx->processor.chain();
-    if (current && types == fx->types && rate == fx->rate) {
+    if (current && types == fx->types && rate == fx->rate && channels == fx->channels) {
         for (std::size_t i = 0; i < known.size(); ++i) {
             pp::Effect &effect = current->at(i);
             for (const auto &[name, value] : known[i]->params) {
@@ -146,9 +150,10 @@ int pp_fx_set(PPFx *fx, const char *spec, double rate)
         effect->enabled = s->enabled;
         made.push_back(std::move(effect));
     }
-    fx->processor.setChain(std::make_unique<pp::EffectChain>(std::move(made), rate, 2));
+    fx->processor.setChain(std::make_unique<pp::EffectChain>(std::move(made), rate, channels));
     fx->types = std::move(types);
     fx->rate = rate;
+    fx->channels = channels;
     return int(known.size());
 }
 
@@ -161,10 +166,17 @@ void pp_fx_process(PPFx *fx, float *left, float *right, int frames)
 
 void pp_fx_process_keyed(PPFx *fx, float *left, float *right, int frames, const float *key)
 {
-    if (!fx->processor.chain()) {
+    pp::EffectChain *chain = fx->processor.chain();
+    if (!chain) {
         return;
     }
     float *planes[2] = {left, right};
+    if (chain->channels() == 1) {
+        // Mono: the left is the source; the right gets the result.
+        fx->processor.process(planes, planes, 1, frames, key);
+        std::memcpy(right, left, std::size_t(std::max(frames, 0)) * sizeof(float));
+        return;
+    }
     fx->processor.process(planes, planes, 2, frames, key);
 }
 
