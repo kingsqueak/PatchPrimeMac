@@ -11,10 +11,17 @@ let package = Package(
         // Swift reaches it through a plain C API.
         // Patch Prime's built-in effects, copied from the Linux app, behind a C API.
         // No fast-math here: the effects check for non-finite samples.
+        // Xiph.Org's RNNoise (BSD-3-Clause), vendored: see Sources/RNNoise/VENDORING.md.
+        .target(
+            name: "RNNoise",
+            path: "Sources/RNNoise",
+            exclude: ["COPYING", "AUTHORS", "VENDORING.md"],
+            cSettings: [.unsafeFlags(["-O2", "-w"])]),
         .target(
             name: "PPDSP",
+            dependencies: ["RNNoise"],
             path: "Sources/PPDSP",
-            cxxSettings: [.unsafeFlags(["-O3"])]),
+            cxxSettings: [.define("PATCHPRIME_HAVE_RNNOISE"), .unsafeFlags(["-O3"])]),
         .target(
             name: "PPCore",
             dependencies: ["PPDSP"],
@@ -54,7 +61,7 @@ let package = Package(
             name: "ppdsp-test",
             dependencies: ["PPDSP"],
             path: "Sources/ppdsp-test",
-            cxxSettings: [.headerSearchPath("../PPDSP"), .unsafeFlags(["-O2"])]),
+            cxxSettings: [.headerSearchPath("../PPDSP"), .define("PATCHPRIME_HAVE_RNNOISE"), .unsafeFlags(["-O2"])]),
         .executableTarget(
             name: "ppcore-test",
             dependencies: ["PPCore", "PPDSP"],

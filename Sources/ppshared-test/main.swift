@@ -98,7 +98,8 @@ do {
     var again = PresetStore(folder: dir)
     again.load()
     check("chains survive a reload", again.chain("RE20 streaming") == chain)
-    check("built-in voice chains are there", again.chain("Podcast voice")?.count == 6 && BuiltInChains.names.count == 5)
+    check("built-in voice chains are there", again.chain("Podcast voice")?.count == 6 && BuiltInChains.names.count == 5
+        && again.chain("Streaming voice")?.first?.type == "denoise")
     check("a saved chain with a built-in's name wins", again.saveChain("Natural voice", chain) && again.chain("Natural voice") == chain)
     check("a chain can be deleted", again.removeChain("apple") && again.chain("apple") == nil)
     check("an effect preset is stored on, whatever it was", again.saveEffect("Tight", chain[0]) && again.effect("gate", "Tight")?.enabled == true)

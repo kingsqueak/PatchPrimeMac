@@ -2,13 +2,16 @@
 // SPDX-FileCopyrightText: 2026 KC2RGW Chris
 // Patch Prime's effect tests (tests/test_effects.cpp, commit 458e957), run without
 // Qt through a small stand-in for the Qt Test macros. Tests of the Linux app's device
-// model and settings files are left out; denoise is left out until RNNoise is in.
+// model and settings files are left out.
 
 #include "qtshim.h"
 
 #include "effects.h"
 #include "delay.h"
 #include "dynamics.h"
+#ifdef PATCHPRIME_HAVE_RNNOISE
+#include "denoise.h"
+#endif
 #include "eq.h"
 #include "loudness.h"
 #include "multiband.h"
@@ -618,6 +621,56 @@ public:
 #ifdef PATCHPRIME_HAVE_RNNOISE
 #endif
 
+    void denoiseRemovesNoise()
+    {
+        // Steady white noise at about -30 dBFS is not a voice: mostly removed.
+        DenoiseEffect denoise;
+        denoise.prepare(rate, 1);
+        std::mt19937 random(1);
+        std::uniform_real_distribution<float> noise(-0.05F, 0.05F);
+        std::vector<float> samples(static_cast<std::size_t>(48000) * 2);
+        for (float &s : samples) {
+            s = noise(random);
+        }
+        const auto rms = [](std::span<const float> part) {
+            double sum = 0.0;
+            for (const float s : part) {
+                sum += static_cast<double>(s) * s;
+            }
+            return std::sqrt(sum / static_cast<double>(part.size()));
+        };
+        const double before = rms(std::span(samples).subspan(48000));
+        for (std::size_t start = 0; start < samples.size(); start += 256) {
+            float *plane = samples.data() + start; // NOLINT
+            denoise.process(&plane, 1, 256);
+        }
+        const double after = rms(std::span(samples).subspan(48000));
+        QVERIFY2(20.0 * std::log10(after / before) < -10.0,
+                 qPrintable(QString::number(20.0 * std::log10(after / before))));
+
+        // Amount 0: the original, 10 ms (480 samples) late.
+        DenoiseEffect dry;
+        dry.setParam("amount", 0.0);
+        dry.prepare(rate, 1);
+        std::vector<float> ramp(2000);
+        for (std::size_t i = 0; i < ramp.size(); ++i) {
+            ramp[i] = static_cast<float>(i) / 4000.0F;
+        }
+        std::vector<float> out = ramp;
+        float *plane = out.data();
+        dry.process(&plane, 1, static_cast<int>(out.size()));
+        QCOMPARE(out[100], 0.0F);
+        QVERIFY(std::abs(out[1500] - ramp[1500 - DenoiseEffect::frameSize]) < 1e-6F);
+
+        // Not at 48 kHz: passed through.
+        DenoiseEffect other;
+        other.prepare(44100.0, 1);
+        std::vector<float> same = ramp;
+        plane = same.data();
+        other.process(&plane, 1, static_cast<int>(same.size()));
+        QCOMPARE(same, ramp);
+    }
+
     void loudnessReference()
     {
         // BS.1770: a 0 dBFS 997 Hz sine in one channel reads -3.01 LUFS.
@@ -990,6 +1043,7 @@ int main()
     qtshim::run("compressorKnob", [&] { t.compressorKnob(); });
     qtshim::run("deEsserCutsOnlyTheHighs", [&] { t.deEsserCutsOnlyTheHighs(); });
     qtshim::run("expanderTurnsDownBelowThreshold", [&] { t.expanderTurnsDownBelowThreshold(); });
+    qtshim::run("denoiseRemovesNoise", [&] { t.denoiseRemovesNoise(); });
     qtshim::run("loudnessReference", [&] { t.loudnessReference(); });
     qtshim::run("levelerRidesToTarget", [&] { t.levelerRidesToTarget(); });
     qtshim::run("latencyIsWhereTheSoundComesOut", [&] { t.latencyIsWhereTheSoundComesOut(); });

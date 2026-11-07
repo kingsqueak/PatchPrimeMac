@@ -134,9 +134,7 @@ public extension EffectSetting {
     }
 }
 
-/// Ready-made voice chains, as in Patch Prime. Without noise suppression (RNNoise
-/// isn't in this build yet) they use an expander or gate instead, as Patch Prime does
-/// when it's built without it.
+/// Ready-made voice chains, as in Patch Prime.
 public enum BuiltInChains {
     static let bell = 0.0, lowShelf = 1.0, highShelf = 2.0, lowCut = 3.0
 
@@ -170,14 +168,15 @@ public enum BuiltInChains {
         ]),
         // A mic over game or music on a stream: present and steady, room noise out.
         ("Streaming voice", [
-            fx("expander", ["threshold": -45, "ratio": 2, "range": 20]),
+            fx("denoise"),
             eq([(1, lowCut, 90, 0, 0.707), (4, bell, 3500, 2.5, 0.8)]),
             fx("compressor", ["amount": 60]),
             fx("deesser"),
             limiter,
         ]),
-        // Fans, traffic, a keyboard: a gate first.
+        // Fans, traffic, a keyboard: noise suppression and a gate first.
         ("Noisy room", [
+            fx("denoise"),
             fx("gate", ["threshold": -45, "range": 30]),
             eq([(1, lowCut, 100, 0, 0.707), (2, bell, 400, -2, 1.0)]),
             fx("compressor", ["amount": 40]),

@@ -293,7 +293,6 @@ do {
         (192000, 48000, 1024, 128), (44100, 48000, 512, 128), (48000, 44100, 128, 512),
         (48000, 192000, 128, 1024),
     ]
-    var sameRate = 0.0
     for (p, c, pb, cb) in pairs {
         // The filter alone: steady clocks, no drift.
         var out: [Float] = []
@@ -305,10 +304,9 @@ do {
         let run = simulate(ppm: -18, producerBlock: pb, consumerBlock: cb, saved: -18, seconds: 30,
             producerRate: p, consumerRate: c, tone: 1000, capture: &real)
         let wander = bestResidualDB(real, tone: 1000 * (1 - 18e-6), rate: c)
-        if p == c { sameRate = wander }
         check(String(format: "bridge %.1f to %.1f kHz: filter %.0f dB, with jitter %.0f dB, %.1f ppm",
             p / 1000, c / 1000, filter, wander, run.ratio),
-            filter < -90 && wander < sameRate + 10 && run.underruns == 0 && run.overruns == 0
+            filter < -90 && wander < -70 && run.underruns == 0 && run.overruns == 0
                 && abs(run.ratio + 18) < 2, "\(run)")
     }
     for (p, c) in [(192000.0, 48000.0), (96000.0, 48000.0), (48000.0, 44100.0)] {

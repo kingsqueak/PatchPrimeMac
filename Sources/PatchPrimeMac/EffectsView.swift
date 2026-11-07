@@ -231,6 +231,10 @@ struct EffectCard: View {
             if info == nil {
                 Text("This effect isn't known to this version, so it's skipped.").font(.caption).foregroundStyle(.orange)
             }
+            if effect.type == "denoise", model.snapshot.engineRate > 0, model.snapshot.engineRate != 48000 {
+                Text("Noise suppression works at 48 kHz only. At \(AudioSection.khz(model.snapshot.engineRate)) it passes the sound through unchanged.")
+                    .font(.caption).foregroundStyle(.orange)
+            }
             if effect.type == "eq" {
                 EqCurve(stage: stage, slot: slot, index: index, effect: effect, rate: model.snapshot.engineRate)
             }
@@ -460,6 +464,11 @@ struct EffectMeters: View {
         HStack(alignment: .top, spacing: 8) {
             labelled("IN", Bar(fill: Self.position(level.first ?? 0), width: 50, level: true))
             labelled("OUT", Bar(fill: Self.position(level.count > 1 ? level[1] : 0), width: 50, level: true))
+            if type == "denoise" {
+                let voice = own.first ?? 0
+                labelled(String(format: "VOICE %.0f%%", voice), Bar(fill: CGFloat(min(1, max(0, voice / 100))), width: 70, color: .cyan))
+                    .help("How sure noise suppression is that it's hearing a voice, now")
+            }
             if let reduction {
                 let range = EffectMeterReading.range(type)
                 if type == "leveler" {
