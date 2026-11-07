@@ -21,6 +21,9 @@ enum {
 };
 
 typedef struct PPMixer PPMixer;
+typedef struct PPFx PPFx; // see ppdsp.h
+
+enum { PP_KIND_STRIP = 0, PP_KIND_BUS = 1, PP_KIND_OUTPUT = 2 };
 
 PPMixer *pp_mixer_create(double sampleRate);
 void pp_mixer_destroy(PPMixer *mixer);
@@ -43,6 +46,17 @@ void pp_mixer_set_bus_to_output(PPMixer *m, int bus, int output, float gain);
 void pp_mixer_set_input_active(PPMixer *m, int input, int active);
 void pp_mixer_set_bus_active(PPMixer *m, int bus, int active);
 void pp_mixer_set_output_active(PPMixer *m, int output, int active);
+
+// Effects (Patch Prime's built-ins): on a strip before its fader, on a bus or an
+// output after it. The spec is pp_fx_set's (ppdsp.h). Returns the number of
+// effects running, or -1. Call pp_mixer_collect now and then to free old chains.
+int pp_mixer_set_effects(PPMixer *m, int kind, int slot, const char *spec);
+PPFx *pp_mixer_effects(PPMixer *m, int kind, int slot);
+void pp_mixer_collect(PPMixer *m);
+// A limiter on an output that reaches hardware, after its own effects: true peak,
+// 1.5 ms lookahead, at ceilingDb (below 0). 0 turns it off. The hard clip in the
+// engine stays behind it as the last resort.
+void pp_mixer_set_output_safety(PPMixer *m, int output, float ceilingDb);
 
 // [RT] One block. Before it, write each active input into pp_mixer_input_left and
 // right. After it, read each active output from pp_mixer_output_left and right.

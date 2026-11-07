@@ -11,6 +11,7 @@ import AVFoundation
 import CoreAudio
 import Foundation
 import PPCore
+import PPDSP
 import PPShared
 
 final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked Sendable {
@@ -29,6 +30,15 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     var pendingRestart: DispatchWorkItem?
     var engineRate = 0.0
     var engineBlock = 0
+    // The built-in effects, and the chains last given to the mixer, by "s0", "b1", "o2",
+    // so only a real change reaches it.
+    let catalog: [EffectInfo] = {
+        guard let text = pp_fx_catalog_json() else { return [] }
+        defer { pp_fx_free_string(text) }
+        return EffectCatalog.decode(String(cString: text))
+    }()
+    var appliedFx: [String: String] = [:]
+    var appliedSafety: [Int: Float] = [:]
     var offline: Set<String> = []
     let rateTimer = DispatchSource.makeTimerSource(queue: .main)
     var pendingSave: DispatchWorkItem?
@@ -98,6 +108,8 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         boundInputs = [:]
         boundOutputs = [:]
         prepared = [:]
+        appliedFx = [:]
+        appliedSafety = [:]
         startCoreIfPossible()
         apply()
     }
@@ -256,7 +268,58 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             pp_mixer_set_output_gain(mixer, Int32(slot), output?.gain ?? 1)
             pp_mixer_set_output_mute(mixer, Int32(slot), (output?.muted ?? false) ? 1 : 0)
         }
+        applyEffects(mixer)
         pp_engine_enable_hardware_output(core, settings.hardwareOutputEnabled ? 1 : 0, settings.hardwareLimit)
+    }
+
+    func applyEffects(_ mixer: OpaquePointer) {
+        func set(_ key: String, _ kind: Int32, _ slot: Int, _ effects: [EffectSetting], _ on: Bool = true) {
+            let spec = effects.spec(on: on)
+            guard appliedFx[key] != spec else { return }
+            if pp_mixer_set_effects(mixer, kind, Int32(slot), spec) >= 0 {
+                appliedFx[key] = spec
+            }
+        }
+        for slot in 0..<Int(PP_MAX_INPUTS) {
+            let strip = settings.strips.first { $0.slot == slot }
+            set("s\(slot)", Int32(PP_KIND_STRIP), slot, strip?.effects ?? [], strip?.effectsOn ?? true)
+        }
+        for slot in 0..<Int(PP_MAX_BUSES) {
+            let bus = settings.buses.first { $0.slot == slot }
+            set("b\(slot)", Int32(PP_KIND_BUS), slot, bus?.effects ?? [], bus?.effectsOn ?? true)
+        }
+        for slot in 0..<Int(PP_MAX_OUTPUTS) {
+            let output = settings.outputs.first { $0.slot == slot }
+            set("o\(slot)", Int32(PP_KIND_OUTPUT), slot, output?.effects ?? [], output?.effectsOn ?? true)
+            // Hardware gets the safety limiter at the hardware limit; the hard clip
+            // in the engine stays behind it.
+            var ceiling: Float = 0
+            if let output, case .device = output.sink, settings.hardwareLimit > 0, settings.hardwareLimit < 1 {
+                ceiling = 20 * log10(settings.hardwareLimit)
+            }
+            if appliedSafety[slot] != ceiling {
+                pp_mixer_set_output_safety(mixer, Int32(slot), ceiling)
+                appliedSafety[slot] = ceiling
+            }
+        }
+    }
+
+    /// Runs `change` on the chain a command names (strip|bus|out and a slot).
+    func editChain(_ settings: inout Settings, _ kind: String, _ slot: Int,
+        _ change: (inout [EffectSetting]) -> String?) -> String? {
+        switch kind {
+        case "strip":
+            guard let i = settings.strips.firstIndex(where: { $0.slot == slot }) else { return "no strip \(slot)" }
+            return change(&settings.strips[i].effects)
+        case "bus":
+            guard let i = settings.buses.firstIndex(where: { $0.slot == slot }) else { return "no bus \(slot)" }
+            return change(&settings.buses[i].effects)
+        case "out":
+            guard let i = settings.outputs.firstIndex(where: { $0.slot == slot }) else { return "no output \(slot)" }
+            return change(&settings.outputs[i].effects)
+        default:
+            return "strip, bus or out"
+        }
     }
 
     func bindInput(_ core: OpaquePointer, _ slot: Int, _ device: AudioDeviceInfo, _ left: Int, _ right: Int) -> Bool {
@@ -334,6 +397,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     /// goes away, the same slew takes the driver back to free running.
     func steerClock() {
         guard let core else { return }
+        if let mixer = pp_engine_mixer(core) { pp_mixer_collect(mixer) }
         var want = 0.0
         var text = "Patch Prime"
         if let wanted = settings.clockDevice {
@@ -634,6 +698,86 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
                 return Reply(ok: false, text: "device-buffer <name> 32|64|128|256|512|1024|default")
             }
             return commit(next, "done, engine restarted")
+        case "effects-catalog":
+            let data = (try? JSONEncoder().encode(catalog)) ?? Data()
+            return Reply(ok: true, text: String(data: data, encoding: .utf8) ?? "[]")
+        case "fx-add" where args.count >= 3, "fx-remove" where args.count == 3, "fx-move" where args.count == 4,
+             "fx-set" where args.count == 5, "fx-on" where args.count == 4:
+            let a = Array(args)
+            guard let slot = Int(a[1]) else { break }
+            var later = false
+            let problem = editChain(&next, a[0], slot) { chain in
+                switch verb {
+                case "fx-add":
+                    guard let info = catalog.first(where: { $0.type == a[2] }) else {
+                        return "no effect called \(a[2]). Try: " + catalog.map(\.type).joined(separator: ", ")
+                    }
+                    guard chain.count < maxEffects else { return "that chain is full (\(maxEffects) effects)" }
+                    let at = a.count > 3 ? min(max(Int(a[3]) ?? chain.count, 0), chain.count) : chain.count
+                    chain.insert(info.fresh(), at: at)
+                case "fx-remove":
+                    guard let i = Int(a[2]), chain.indices.contains(i) else { return "no effect \(a[2])" }
+                    chain.remove(at: i)
+                case "fx-move":
+                    guard let from = Int(a[2]), let to = Int(a[3]), chain.indices.contains(from), chain.indices.contains(to)
+                    else { return "no such effect" }
+                    chain.insert(chain.remove(at: from), at: to)
+                case "fx-on":
+                    guard let i = Int(a[2]), chain.indices.contains(i) else { return "no effect \(a[2])" }
+                    chain[i].enabled = a[3] == "on"
+                default: // fx-set
+                    guard let i = Int(a[2]), chain.indices.contains(i) else { return "no effect \(a[2])" }
+                    guard let info = catalog.first(where: { $0.type == chain[i].type }),
+                        let param = info.param(a[3]), let value = Double(a[4])
+                    else { return "\(chain[i].type) has no parameter \(a[3])" }
+                    chain[i].params[a[3]] = param.valid(value)
+                    // The compressor's own controls start where its knob was.
+                    if chain[i].type == "compressor", a[3] == "advanced", param.valid(value) == 1 {
+                        var knob = [Double](repeating: 0, count: 5)
+                        pp_fx_compressor_knob(chain[i].params["amount"] ?? 40, &knob)
+                        for (n, name) in ["threshold", "ratio", "attack", "release", "makeup"].enumerated() {
+                            if let p = info.param(name) { chain[i].params[name] = p.valid(knob[n]) }
+                        }
+                    }
+                    later = true
+                }
+                return nil
+            }
+            if let problem { return Reply(ok: false, text: problem) }
+            return commit(next, "done", later: later)
+        case "fx-all" where args.count == 3:
+            let a = Array(args)
+            guard let slot = Int(a[1]), a[2] == "on" || a[2] == "off" else { break }
+            let on = a[2] == "on"
+            switch a[0] {
+            case "strip":
+                guard let i = next.strips.firstIndex(where: { $0.slot == slot }) else { return Reply(ok: false, text: "no strip \(slot)") }
+                next.strips[i].effectsOn = on
+            case "bus":
+                guard let i = next.buses.firstIndex(where: { $0.slot == slot }) else { return Reply(ok: false, text: "no bus \(slot)") }
+                next.buses[i].effectsOn = on
+            case "out":
+                guard let i = next.outputs.firstIndex(where: { $0.slot == slot }) else { return Reply(ok: false, text: "no output \(slot)") }
+                next.outputs[i].effectsOn = on
+            default:
+                return Reply(ok: false, text: "fx-all strip|bus|out <n> on|off")
+            }
+            return commit(next, on ? "effects on" : "effects bypassed")
+        case "fx-list" where args.count == 2:
+            let a = Array(args)
+            guard let slot = Int(a[1]) else { break }
+            var lines: [String] = []
+            var copy = next
+            let problem = editChain(&copy, a[0], slot) { chain in
+                for (i, e) in chain.enumerated() {
+                    let label = catalog.first { $0.type == e.type }?.label ?? e.type
+                    let params = e.params.keys.sorted().map { "\($0)=\(e.params[$0]!)" }.joined(separator: " ")
+                    lines.append("\(i) \(label)\(e.enabled ? "" : " (bypassed)"): \(params)")
+                }
+                return nil
+            }
+            if let problem { return Reply(ok: false, text: problem) }
+            return Reply(ok: true, text: lines.isEmpty ? "no effects" : lines.joined(separator: "\n"))
         case "hardware" where args.count == 1:
             next.hardwareOutputEnabled = args.first == "on"
             return commit(next, "hardware output \(next.hardwareOutputEnabled ? "ON" : "off")")
@@ -655,6 +799,10 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             clock patchprime | clock <device name>
             rate 44100|48000|96000|192000 | buffer 32|64|128|256|512|1024
             device-buffer <name> <frames>|default | device-rate <name> follow|own
+            effects-catalog | fx-list strip|bus|out <n>
+            fx-add strip|bus|out <n> <type> [position] | fx-remove ... <i> | fx-move ... <from> <to>
+            fx-set strip|bus|out <n> <i> <param> <value> | fx-on strip|bus|out <n> <i> on|off
+            fx-all strip|bus|out <n> on|off   every effect at once, keeping each one's switch
             default output|input <virtual slot> | default-device output|input <device name>
             strip-remove <n> | bus-remove <n> | out-remove <n>
             virtual-list | virtual-add <slot> out|in <name> | virtual-rename <slot> <name> | virtual-remove <slot>

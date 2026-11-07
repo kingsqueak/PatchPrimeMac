@@ -9,8 +9,15 @@ let package = Package(
     targets: [
         // The realtime core: no allocation, locks or Objective-C on the audio path.
         // Swift reaches it through a plain C API.
+        // Patch Prime's built-in effects, copied from the Linux app, behind a C API.
+        // No fast-math here: the effects check for non-finite samples.
+        .target(
+            name: "PPDSP",
+            path: "Sources/PPDSP",
+            cxxSettings: [.unsafeFlags(["-O3"])]),
         .target(
             name: "PPCore",
+            dependencies: ["PPDSP"],
             path: "Sources/PPCore",
             cxxSettings: [.unsafeFlags(["-O3", "-ffast-math", "-fno-exceptions", "-fno-rtti"])],
             linkerSettings: [.linkedFramework("CoreAudio")]),
@@ -21,12 +28,12 @@ let package = Package(
             swiftSettings: [.swiftLanguageMode(.v5)]),
         .executableTarget(
             name: "PatchPrimeEngine",
-            dependencies: ["PPCore", "PPShared"],
+            dependencies: ["PPCore", "PPDSP", "PPShared"],
             path: "Sources/PatchPrimeEngine",
             swiftSettings: [.swiftLanguageMode(.v5)]),
         .executableTarget(
             name: "PatchPrimeMac",
-            dependencies: ["PPShared"],
+            dependencies: ["PPShared", "PPDSP"],
             path: "Sources/PatchPrimeMac",
             swiftSettings: [.swiftLanguageMode(.v5)]),
         .executableTarget(
@@ -44,9 +51,14 @@ let package = Package(
             path: "Sources/ppengine-live",
             linkerSettings: [.linkedFramework("CoreAudio"), .linkedFramework("CoreFoundation")]),
         .executableTarget(
+            name: "ppdsp-test",
+            dependencies: ["PPDSP"],
+            path: "Sources/ppdsp-test",
+            cxxSettings: [.headerSearchPath("../PPDSP"), .unsafeFlags(["-O2"])]),
+        .executableTarget(
             name: "ppcore-test",
-            dependencies: ["PPCore"],
+            dependencies: ["PPCore", "PPDSP"],
             path: "Sources/ppcore-test"),
     ],
-    cxxLanguageStandard: .cxx20
+    cxxLanguageStandard: .cxx2b
 )

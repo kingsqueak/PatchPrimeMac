@@ -65,5 +65,6 @@ struct PatchPrimeMacApp: App {
         save(ContentView(), "-mixer", CGSize(width: 860, height: 560))
         save(RoutingView(), "-routing", CGSize(width: 620, height: 300))
         save(SetupView(), "-setup", CGSize(width: 620, height: 700))
+        save(EffectsEditor(stage: .input, slot: 0, label: "RE20") {}, "-effects", CGSize(width: 640, height: 1400))
     }
 }

@@ -5,6 +5,7 @@
 // Audio doesn't depend on this app: quitting it changes nothing.
 
 import Foundation
+import PPDSP
 import PPShared
 import SwiftUI
 
@@ -36,6 +37,12 @@ final class Model: ObservableObject {
     @Published var reachable = true
     @Published var lastError: String?
     let levels = Levels()
+    /// The built-in effects, from the same code the engine runs.
+    let catalog: [EffectInfo] = {
+        guard let text = pp_fx_catalog_json() else { return [] }
+        defer { pp_fx_free_string(text) }
+        return EffectCatalog.decode(String(cString: text))
+    }()
     private var held: [String: Float] = [:]
     private var timer: Timer?
     private var meterTimer: Timer?
@@ -170,6 +177,10 @@ extension Snapshot {
         pr30.gain = 0.5
         var desktop = Strip(slot: 2, label: "Desktop", source: .virtual(slot: 0))
         desktop.muted = true
+        re20.effects = [EffectSetting(type: "gate", params: ["threshold": -50]),
+            EffectSetting(type: "eq", params: ["b1On": 1, "b1Type": 1, "b1Freq": 80, "b2On": 1, "b2Freq": 3500, "b2Gain": 3]),
+            EffectSetting(type: "compressor", params: ["amount": 55]),
+            EffectSetting(type: "deesser", enabled: false)]
         s.settings.strips = [re20, pr30, desktop]
         s.settings.buses[0].outputSends = [Send(to: 0, gain: 1)]
         s.settings.buses[1].outputSends = [Send(to: 1, gain: 1)]

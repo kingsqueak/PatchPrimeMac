@@ -4,6 +4,7 @@
 // Offline tests of the mixer core. No audio device is touched.
 import Foundation
 import PPCore
+import PPDSP
 
 nonisolated(unsafe) var failures = 0
 
@@ -319,6 +320,90 @@ do {
         check(String(format: "bridge %.1f to %.1f kHz: a %.1f kHz tone is gone (%.0f dB)", p / 1000, c / 1000,
             tone / 1000, alias), alias < -60)
     }
+}
+
+// Effects in the mixer: Patch Prime's built-ins through the same calls the engine uses.
+do {
+    let catalogText = pp_fx_catalog_json()!
+    let catalog = (try? JSONSerialization.jsonObject(with: Data(String(cString: catalogText).utf8))) as? [[String: Any]] ?? []
+    pp_fx_free_string(catalogText)
+    let types = catalog.compactMap { $0["type"] as? String }
+    check("effects catalog lists the built-ins", types.count >= 12 && types.contains("limiter") && types.contains("eq"), "\(types)")
+
+    let m = pp_mixer_create(48000)!
+    pp_mixer_set_input_active(m, 0, 1)
+    pp_mixer_set_output_active(m, 0, 1)
+    pp_mixer_set_input_to_output(m, 0, 0, 1)
+    pp_mixer_set_input_gain(m, 0, 0.5)
+    check("a strip's effects are set", pp_mixer_set_effects(m, Int32(PP_KIND_STRIP), 0, "gain\t1\tgainDb=6.0206") == 1)
+    func run(_ value: Float, blocks: Int = 400) -> Float {
+        var peak: Float = 0
+        for _ in 0..<blocks {
+            fill(m, 0, value, value)
+            pp_mixer_process(m, 128)
+            peak = pp_mixer_output_left(m, 0)[127]
+        }
+        return peak
+    }
+    let doubled = run(0.25)
+    check("strip effects come before the fader: 0.25, +6 dB, fader 0.5", abs(doubled - 0.25) < 0.002, "\(doubled)")
+    check("changing a parameter keeps the chain", pp_mixer_set_effects(m, Int32(PP_KIND_STRIP), 0, "gain\t1\tgainDb=0") == 1)
+    let unity = run(0.25)
+    check("and the new value applies", abs(unity - 0.125) < 0.002, "\(unity)")
+    check("bypassing an effect", pp_mixer_set_effects(m, Int32(PP_KIND_STRIP), 0, "gain\t0\tgainDb=12") == 1 && abs(run(0.25) - 0.125) < 0.002)
+    check("no effects", pp_mixer_set_effects(m, Int32(PP_KIND_STRIP), 0, "") == 0 && abs(run(0.25) - 0.125) < 0.002)
+    check("a bad spec is refused", pp_mixer_set_effects(m, Int32(PP_KIND_STRIP), 0, "gain\t1\tgainDb=loud") == -1)
+
+    // A limiter on the output, after its fader, holds the ceiling the hard clip used to.
+    pp_mixer_set_input_gain(m, 0, 1)
+    pp_mixer_set_effects(m, Int32(PP_KIND_OUTPUT), 0, "limiter\t1\tceiling=-6")
+    var peak: Float = 0
+    var phase = 0.0
+    for block in 0..<800 {
+        let l = pp_mixer_input_left(m, 0)!, r = pp_mixer_input_right(m, 0)!
+        for i in 0..<128 {
+            let v = Float(sin(phase))
+            l[i] = v
+            r[i] = v
+            phase += 2 * Double.pi * 1000 / 48000
+        }
+        pp_mixer_process(m, 128)
+        if block > 400 {
+            for i in 0..<128 { peak = max(peak, abs(pp_mixer_output_left(m, 0)[i])) }
+        }
+    }
+    check(String(format: "an output limiter holds -6 dBFS with a 0 dBFS sine in (%.2f dBFS)", 20 * log10(peak)),
+        peak <= 0.5012 && peak > 0.45)
+    let meter = pp_mixer_read_output_meter(m, 0)
+    check("the output meter reads after the limiter", meter.peakLeft <= 0.5012, "\(meter)")
+    pp_mixer_collect(m)
+
+    // Every effect at its defaults: finite output from noise, and what each costs.
+    pp_mixer_set_effects(m, Int32(PP_KIND_OUTPUT), 0, "")
+    var generator = SystemRandomNumberGenerator()
+    var report: [String] = []
+    var allFinite = true
+    for type in types {
+        pp_mixer_set_effects(m, Int32(PP_KIND_STRIP), 0, "\(type)\t1\t")
+        let blocks = 375 * 4 // 4 s at 48 kHz
+        let start = DispatchTime.now().uptimeNanoseconds
+        for _ in 0..<blocks {
+            let l = pp_mixer_input_left(m, 0)!, r = pp_mixer_input_right(m, 0)!
+            for i in 0..<128 {
+                l[i] = Float.random(in: -0.3...0.3, using: &generator)
+                r[i] = l[i]
+            }
+            pp_mixer_process(m, 128)
+            let out = pp_mixer_output_left(m, 0)!
+            for i in 0..<128 where !out[i].isFinite { allFinite = false }
+        }
+        let seconds = Double(DispatchTime.now().uptimeNanoseconds - start) / 1e9
+        report.append(String(format: "%@ %.2f%%", type, 100 * seconds / 4))
+        pp_mixer_collect(m)
+    }
+    check("every effect gives finite output from noise", allFinite)
+    print("cost of each effect at 48 kHz, stereo, 128-frame blocks, % of a core (with the test's noise):\n  " + report.joined(separator: ", "))
+    pp_mixer_destroy(m)
 }
 
 print(failures == 0 ? "all passed" : "\(failures) FAILED")

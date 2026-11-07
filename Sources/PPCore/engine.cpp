@@ -190,6 +190,15 @@ OSStatus engineProc(AudioObjectID, const AudioTimeStamp *now, const AudioBufferL
     const AudioTimeStamp *, AudioBufferList *out, const AudioTimeStamp *, void *user)
 {
     auto *e = static_cast<PPEngine *>(user);
+#if defined(__aarch64__)
+    // Flush denormals to zero on this thread: filters in the effects slow to a crawl
+    // on them as a sound dies away. The effects avoid them too; this is the backstop.
+    uint64_t fpcr;
+    asm volatile("mrs %0, fpcr" : "=r"(fpcr));
+    if ((fpcr & (1ULL << 24)) == 0) {
+        asm volatile("msr fpcr, %0" : : "r"(fpcr | (1ULL << 24)));
+    }
+#endif
     const double seconds = double(now->mHostTime) * e->secPerTick;
     if (e->lastSeconds > 0) {
         const double gap = (seconds - e->lastSeconds) * 1e3;

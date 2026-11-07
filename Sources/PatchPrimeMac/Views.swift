@@ -42,6 +42,8 @@ struct StripView: View {
     var muted: Bool
     var offline: Bool
     var silent = false
+    var effects = 0
+    var effectsOn = true
     @State private var renaming = false
     @State private var newName = ""
 
@@ -77,6 +79,7 @@ struct StripView: View {
             ToggleButton(title: "MUTE", on: muted, color: .red) {
                 model.send("mute", stage.verb, "\(slot)", muted ? "off" : "on")
             }
+            EffectsButton(stage: stage, slot: slot, label: label, count: effects, on: effectsOn)
         }
         .padding(8)
         .frame(width: 92)
@@ -123,19 +126,20 @@ struct MixerView: View {
                     ForEach(s.strips, id: \.slot) { strip in
                         StripView(stage: .input, slot: strip.slot, label: strip.label, detail: detail(strip.source),
                             gain: strip.gain, muted: strip.muted, offline: model.snapshot.offline.contains(strip.label),
-                            silent: model.snapshot.silent.contains(strip.label))
+                            silent: model.snapshot.silent.contains(strip.label), effects: strip.effects.count, effectsOn: strip.effectsOn)
                     }
                 }
                 section("MIX BUSES", .blue) {
                     ForEach(s.buses, id: \.slot) { bus in
                         StripView(stage: .bus, slot: bus.slot, label: bus.label, detail: "Mix bus", gain: bus.gain,
-                            muted: bus.muted, offline: false)
+                            muted: bus.muted, offline: false, effects: bus.effects.count, effectsOn: bus.effectsOn)
                     }
                 }
                 section("OUTPUTS", .orange) {
                     ForEach(s.outputs, id: \.slot) { output in
                         StripView(stage: .output, slot: output.slot, label: output.label, detail: detail(output.sink),
-                            gain: output.gain, muted: output.muted, offline: model.snapshot.offline.contains(output.label))
+                            gain: output.gain, muted: output.muted, offline: model.snapshot.offline.contains(output.label),
+                            effects: output.effects.count, effectsOn: output.effectsOn)
                     }
                 }
             }

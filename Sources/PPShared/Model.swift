@@ -64,6 +64,38 @@ public struct Send: Codable, Equatable, Sendable {
     }
 }
 
+/// One built-in effect in a chain: Patch Prime's names and parameters.
+public struct EffectSetting: Codable, Equatable, Sendable {
+    public var type: String
+    public var enabled = true
+    public var params: [String: Double] = [:]
+
+    public init(type: String, enabled: Bool = true, params: [String: Double] = [:]) {
+        self.type = type
+        self.enabled = enabled
+        self.params = params
+    }
+
+    /// The line the engine reads (see pp_fx_set): type, on, name=value pairs.
+    var specLine: String {
+        let pairs = params.keys.sorted().map { "\($0)=\(params[$0]!)" }.joined(separator: ";")
+        return "\(type)\t\(enabled ? 1 : 0)\t\(pairs)"
+    }
+}
+
+public extension Array where Element == EffectSetting {
+    var spec: String { map(\.specLine).joined(separator: "\n") }
+
+    /// The spec with the chain's own switch applied: off bypasses every effect (with
+    /// the usual crossfade) and keeps the chain, so switching back is seamless.
+    func spec(on: Bool) -> String {
+        on ? spec : map { var e = $0; e.enabled = false; return e.specLine }.joined(separator: "\n")
+    }
+}
+
+/// Effects one strip, bus or output may have, as on Linux.
+public let maxEffects = 8
+
 public struct Strip: Codable, Equatable, Sendable {
     public var slot: Int
     public var label: String
@@ -72,11 +104,30 @@ public struct Strip: Codable, Equatable, Sendable {
     public var muted = false
     public var busSends: [Send] = []
     public var outputSends: [Send] = []
+    /// Before the fader, so apps recording a bus get the processed sound.
+    public var effects: [EffectSetting] = []
+    /// Every effect on or bypassed at once, keeping each one's own switch.
+    public var effectsOn = true
 
     public init(slot: Int, label: String, source: Endpoint) {
         self.slot = slot
         self.label = label
         self.source = source
+    }
+
+    enum CodingKeys: String, CodingKey { case slot, label, source, gain, muted, busSends, outputSends, effects, effectsOn }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        slot = try c.decode(Int.self, forKey: .slot)
+        label = try c.decode(String.self, forKey: .label)
+        source = try c.decode(Endpoint.self, forKey: .source)
+        gain = try c.decodeIfPresent(Float.self, forKey: .gain) ?? 1
+        muted = try c.decodeIfPresent(Bool.self, forKey: .muted) ?? false
+        busSends = try c.decodeIfPresent([Send].self, forKey: .busSends) ?? []
+        outputSends = try c.decodeIfPresent([Send].self, forKey: .outputSends) ?? []
+        effects = try c.decodeIfPresent([EffectSetting].self, forKey: .effects) ?? []
+        effectsOn = try c.decodeIfPresent(Bool.self, forKey: .effectsOn) ?? true
     }
 }
 
@@ -86,10 +137,27 @@ public struct Bus: Codable, Equatable, Sendable {
     public var gain: Float = 1
     public var muted = false
     public var outputSends: [Send] = []
+    /// After the fader.
+    public var effects: [EffectSetting] = []
+    /// Every effect on or bypassed at once, keeping each one's own switch.
+    public var effectsOn = true
 
     public init(slot: Int, label: String) {
         self.slot = slot
         self.label = label
+    }
+
+    enum CodingKeys: String, CodingKey { case slot, label, gain, muted, outputSends, effects, effectsOn }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        slot = try c.decode(Int.self, forKey: .slot)
+        label = try c.decode(String.self, forKey: .label)
+        gain = try c.decodeIfPresent(Float.self, forKey: .gain) ?? 1
+        muted = try c.decodeIfPresent(Bool.self, forKey: .muted) ?? false
+        outputSends = try c.decodeIfPresent([Send].self, forKey: .outputSends) ?? []
+        effects = try c.decodeIfPresent([EffectSetting].self, forKey: .effects) ?? []
+        effectsOn = try c.decodeIfPresent(Bool.self, forKey: .effectsOn) ?? true
     }
 }
 
@@ -99,11 +167,28 @@ public struct Output: Codable, Equatable, Sendable {
     public var sink: Endpoint
     public var gain: Float = 1
     public var muted = false
+    /// After the fader (a limiter, say).
+    public var effects: [EffectSetting] = []
+    /// Every effect on or bypassed at once, keeping each one's own switch.
+    public var effectsOn = true
 
     public init(slot: Int, label: String, sink: Endpoint) {
         self.slot = slot
         self.label = label
         self.sink = sink
+    }
+
+    enum CodingKeys: String, CodingKey { case slot, label, sink, gain, muted, effects, effectsOn }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        slot = try c.decode(Int.self, forKey: .slot)
+        label = try c.decode(String.self, forKey: .label)
+        sink = try c.decode(Endpoint.self, forKey: .sink)
+        gain = try c.decodeIfPresent(Float.self, forKey: .gain) ?? 1
+        muted = try c.decodeIfPresent(Bool.self, forKey: .muted) ?? false
+        effects = try c.decodeIfPresent([EffectSetting].self, forKey: .effects) ?? []
+        effectsOn = try c.decodeIfPresent(Bool.self, forKey: .effectsOn) ?? true
     }
 }
 
@@ -194,6 +279,11 @@ public struct Settings: Codable, Equatable, Sendable {
         }
         for o in outputs {
             endpoint(o.sink, "output \"\(o.label)\"")
+        }
+        for (what, effects) in strips.map({ ("strip \"\($0.label)\"", $0.effects) })
+            + buses.map({ ("bus \"\($0.label)\"", $0.effects) }) + outputs.map({ ("output \"\($0.label)\"", $0.effects) })
+        where effects.count > maxEffects {
+            found.append("\(what) has \(effects.count) effects; the most is \(maxEffects)")
         }
         if !Settings.rates.contains(sampleRate) {
             found.append("sample rate \(sampleRate) isn't one of 44100, 48000, 96000 or 192000")

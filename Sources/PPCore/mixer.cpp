@@ -7,11 +7,13 @@
 // across a block; the work per block follows the routes in use, not the table size.
 
 #include "ppcore.h"
+#include "ppdsp.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <new>
 
@@ -140,6 +142,23 @@ struct PPMixer
     Gain inputToBus[PP_MAX_INPUTS][PP_MAX_BUSES];
     Gain inputToOutput[PP_MAX_INPUTS][PP_MAX_OUTPUTS];
     Gain busToOutput[PP_MAX_BUSES][PP_MAX_OUTPUTS];
+    // Effects: on a strip before its fader; on a bus or output after it, with the
+    // meter after the effects, so an output's meter shows what its limiter let by.
+    std::array<PPFx *, PP_MAX_INPUTS> inputFx{};
+    std::array<PPFx *, PP_MAX_BUSES> busFx{};
+    std::array<PPFx *, PP_MAX_OUTPUTS> outputFx{};
+    // The safety limiter on outputs that reach hardware, after the user's effects.
+    std::array<PPFx *, PP_MAX_OUTPUTS> safetyFx{};
+
+    PPFx *fxFor(int kind, int slot)
+    {
+        switch (kind) {
+        case PP_KIND_STRIP: return slot >= 0 && slot < PP_MAX_INPUTS ? inputFx[size_t(slot)] : nullptr;
+        case PP_KIND_BUS: return slot >= 0 && slot < PP_MAX_BUSES ? busFx[size_t(slot)] : nullptr;
+        case PP_KIND_OUTPUT: return slot >= 0 && slot < PP_MAX_OUTPUTS ? outputFx[size_t(slot)] : nullptr;
+        default: return nullptr;
+        }
+    }
 
     float glide(Gain &g, int frames) const
     {
@@ -168,6 +187,10 @@ struct PPMixer
         applyRamp(c.audio.left, frames, c.fader.current, next);
         applyRamp(c.audio.right, frames, c.fader.current, next);
         c.fader.current = next;
+    }
+
+    static void measure(Channel &c, int frames)
+    {
         c.meter.add(peakOf(c.audio.left, frames), peakOf(c.audio.right, frames));
     }
 };
@@ -180,6 +203,18 @@ PPMixer *pp_mixer_create(double sampleRate)
     if (m) {
         m->sampleRate = sampleRate;
         m->glideStep = float(1.0 / (0.010 * sampleRate)); // full scale in 10 ms
+        for (auto &f : m->inputFx) {
+            f = pp_fx_create();
+        }
+        for (auto &f : m->busFx) {
+            f = pp_fx_create();
+        }
+        for (auto &f : m->outputFx) {
+            f = pp_fx_create();
+        }
+        for (auto &f : m->safetyFx) {
+            f = pp_fx_create();
+        }
     }
     return m;
 }
@@ -187,8 +222,56 @@ PPMixer *pp_mixer_create(double sampleRate)
 void pp_mixer_destroy(PPMixer *m)
 {
     if (m) {
+        for (auto &f : m->inputFx) {
+            pp_fx_destroy(f);
+        }
+        for (auto &f : m->busFx) {
+            pp_fx_destroy(f);
+        }
+        for (auto &f : m->outputFx) {
+            pp_fx_destroy(f);
+        }
+        for (auto &f : m->safetyFx) {
+            pp_fx_destroy(f);
+        }
         m->~PPMixer();
         ::operator delete(m, std::align_val_t(64));
+    }
+}
+
+int pp_mixer_set_effects(PPMixer *m, int kind, int slot, const char *spec)
+{
+    PPFx *fx = m->fxFor(kind, slot);
+    return fx ? pp_fx_set(fx, spec, m->sampleRate) : -1;
+}
+
+PPFx *pp_mixer_effects(PPMixer *m, int kind, int slot) { return m->fxFor(kind, slot); }
+
+void pp_mixer_set_output_safety(PPMixer *m, int output, float ceilingDb)
+{
+    if (output < 0 || output >= PP_MAX_OUTPUTS) {
+        return;
+    }
+    char spec[96] = "";
+    if (ceilingDb < 0) {
+        std::snprintf(spec, sizeof spec, "limiter\t1\tceiling=%.3f;release=100;truePeak=1", double(ceilingDb));
+    }
+    pp_fx_set(m->safetyFx[size_t(output)], spec, m->sampleRate);
+}
+
+void pp_mixer_collect(PPMixer *m)
+{
+    for (auto &f : m->inputFx) {
+        pp_fx_collect(f);
+    }
+    for (auto &f : m->busFx) {
+        pp_fx_collect(f);
+    }
+    for (auto &f : m->outputFx) {
+        pp_fx_collect(f);
+    }
+    for (auto &f : m->safetyFx) {
+        pp_fx_collect(f);
     }
 }
 
@@ -242,7 +325,9 @@ void pp_mixer_process(PPMixer *m, int frames)
         if (!in.active.load(std::memory_order_relaxed)) {
             continue;
         }
+        pp_fx_process(m->inputFx[size_t(i)], in.audio.left, in.audio.right, frames);
         m->fade(in, frames);
+        PPMixer::measure(in, frames);
         for (int b = 0; b < PP_MAX_BUSES; ++b) {
             if (m->buses[size_t(b)].active.load(std::memory_order_relaxed)) {
                 m->send(m->inputToBus[i][b], in.audio, m->buses[size_t(b)].audio, frames);
@@ -260,6 +345,8 @@ void pp_mixer_process(PPMixer *m, int frames)
             continue;
         }
         m->fade(bus, frames);
+        pp_fx_process(m->busFx[size_t(b)], bus.audio.left, bus.audio.right, frames);
+        PPMixer::measure(bus, frames);
         for (int o = 0; o < PP_MAX_OUTPUTS; ++o) {
             if (m->outputs[size_t(o)].active.load(std::memory_order_relaxed)) {
                 m->send(m->busToOutput[b][o], bus.audio, m->outputs[size_t(o)].audio, frames);
@@ -270,6 +357,9 @@ void pp_mixer_process(PPMixer *m, int frames)
         Channel &out = m->outputs[size_t(o)];
         if (out.active.load(std::memory_order_relaxed)) {
             m->fade(out, frames);
+            pp_fx_process(m->outputFx[size_t(o)], out.audio.left, out.audio.right, frames);
+            pp_fx_process(m->safetyFx[size_t(o)], out.audio.left, out.audio.right, frames);
+            PPMixer::measure(out, frames);
         }
     }
 }

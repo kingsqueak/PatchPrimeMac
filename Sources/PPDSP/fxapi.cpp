@@ -1,0 +1,262 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 KC2RGW Chris
+//
+// The C API over Patch Prime's effects. Building and updating a chain follow
+// buildChain() and updateChain() in Patch Prime's busmanager.cpp.
+
+#include "effects.h"
+#include "voice.h"
+#include "ppdsp.h"
+
+#include <cstdlib>
+#include <cstring>
+#include <map>
+#include <sstream>
+#include <string>
+#include <vector>
+
+namespace {
+
+struct Spec
+{
+    std::string type;
+    bool enabled = true;
+    std::map<std::string, double> params;
+};
+
+bool parse(const char *text, std::vector<Spec> &out)
+{
+    std::istringstream lines(text ? text : "");
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (line.empty()) {
+            continue;
+        }
+        const auto a = line.find('\t');
+        if (a == std::string::npos) {
+            return false;
+        }
+        const auto b = line.find('\t', a + 1);
+        Spec s;
+        s.type = line.substr(0, a);
+        s.enabled = line.substr(a + 1, b == std::string::npos ? std::string::npos : b - a - 1) != "0";
+        if (b != std::string::npos) {
+            std::istringstream pairs(line.substr(b + 1));
+            std::string pair;
+            while (std::getline(pairs, pair, ';')) {
+                const auto eq = pair.find('=');
+                if (eq == std::string::npos) {
+                    continue;
+                }
+                char *end = nullptr;
+                const std::string value = pair.substr(eq + 1);
+                const double v = std::strtod(value.c_str(), &end);
+                if (end == value.c_str()) {
+                    return false;
+                }
+                s.params[pair.substr(0, eq)] = v;
+            }
+        }
+        out.push_back(std::move(s));
+    }
+    return true;
+}
+
+void escape(std::string &out, const std::string &text)
+{
+    out += '"';
+    for (const char c : text) {
+        if (c == '"' || c == '\\') {
+            out += '\\';
+            out += c;
+        } else if (static_cast<unsigned char>(c) < 0x20) {
+            out += ' ';
+        } else {
+            out += c;
+        }
+    }
+    out += '"';
+}
+
+std::string number(double v)
+{
+    std::ostringstream s;
+    s.precision(10);
+    s << v;
+    return s.str();
+}
+
+} // namespace
+
+struct PPFx
+{
+    pp::Processor processor;
+    std::vector<std::string> types; // what the current chain holds, in order
+    double rate = 0;
+};
+
+extern "C" {
+
+PPFx *pp_fx_create(void) { return new PPFx; }
+
+void pp_fx_destroy(PPFx *fx) { delete fx; }
+
+int pp_fx_set(PPFx *fx, const char *spec, double rate)
+{
+    std::vector<Spec> wanted;
+    if (!parse(spec, wanted)) {
+        return -1;
+    }
+    std::vector<const Spec *> known;
+    std::vector<std::string> types;
+    for (const auto &s : wanted) {
+        if (pp::makeEffect(s.type)) {
+            known.push_back(&s);
+            types.push_back(s.type);
+        }
+    }
+    if (known.empty()) {
+        if (fx->processor.chain()) {
+            fx->processor.setChain(nullptr);
+        }
+        fx->types.clear();
+        return 0;
+    }
+    pp::EffectChain *current = fx->processor.chain();
+    if (current && types == fx->types && rate == fx->rate) {
+        for (std::size_t i = 0; i < known.size(); ++i) {
+            pp::Effect &effect = current->at(i);
+            for (const auto &[name, value] : known[i]->params) {
+                effect.setParam(name, value);
+            }
+            effect.enabled = known[i]->enabled;
+        }
+        return int(known.size());
+    }
+    std::vector<std::unique_ptr<pp::Effect>> made;
+    for (const Spec *s : known) {
+        auto effect = pp::makeEffect(s->type);
+        for (const auto &[name, value] : s->params) {
+            effect->setParam(name, value);
+        }
+        effect->enabled = s->enabled;
+        made.push_back(std::move(effect));
+    }
+    fx->processor.setChain(std::make_unique<pp::EffectChain>(std::move(made), rate, 2));
+    fx->types = std::move(types);
+    fx->rate = rate;
+    return int(known.size());
+}
+
+void pp_fx_collect(PPFx *fx) { fx->processor.collect(); }
+
+void pp_fx_process(PPFx *fx, float *left, float *right, int frames)
+{
+    if (!fx->processor.chain()) {
+        return;
+    }
+    float *planes[2] = {left, right};
+    fx->processor.process(planes, planes, 2, frames);
+}
+
+int pp_fx_active(const PPFx *fx) { return fx->processor.chain() ? 1 : 0; }
+
+int pp_fx_latency(const PPFx *fx)
+{
+    const pp::EffectChain *chain = fx->processor.chain();
+    return chain ? chain->latency() : 0;
+}
+
+void pp_fx_set_metering(PPFx *fx, int on) { fx->processor.setMetering(on != 0); }
+
+int pp_fx_take_levels(PPFx *fx, float *out, int maxEffects)
+{
+    pp::EffectChain *chain = fx->processor.chain();
+    if (!chain) {
+        return 0;
+    }
+    const auto levels = chain->takeLevels();
+    const int n = std::min(int(levels.size()), maxEffects);
+    for (int i = 0; i < n; ++i) {
+        const auto &l = levels[std::size_t(i)];
+        float in = 0, outPeak = 0;
+        for (std::size_t g = 0; g < l.groups; ++g) {
+            in = std::max(in, l.inPeak[g]);
+            outPeak = std::max(outPeak, l.outPeak[g]);
+        }
+        out[i * 2] = in;
+        out[i * 2 + 1] = outPeak;
+    }
+    return n;
+}
+
+int pp_fx_take_meters(PPFx *fx, int effect, float *out, int max)
+{
+    pp::EffectChain *chain = fx->processor.chain();
+    if (!chain || effect < 0 || std::size_t(effect) >= chain->size() || max <= 0) {
+        return 0;
+    }
+    return int(chain->at(std::size_t(effect)).takeMeters(std::span<float>(out, std::size_t(max))));
+}
+
+char *pp_fx_catalog_json(void)
+{
+    std::string j = "[";
+    bool firstType = true;
+    for (const auto &type : pp::effectTypes()) {
+        if (!firstType) {
+            j += ',';
+        }
+        firstType = false;
+        j += "{\"type\":";
+        escape(j, type);
+        j += ",\"label\":";
+        escape(j, pp::effectLabel(type));
+        j += ",\"key\":";
+        j += pp::effectTakesKey(type) ? "true" : "false";
+        j += ",\"params\":[";
+        bool firstParam = true;
+        for (const auto &p : pp::effectParams(type)) {
+            if (!firstParam) {
+                j += ',';
+            }
+            firstParam = false;
+            j += "{\"name\":";
+            escape(j, p.name);
+            j += ",\"label\":";
+            escape(j, p.label);
+            j += ",\"unit\":";
+            escape(j, p.unit);
+            j += ",\"min\":" + number(p.minimum) + ",\"max\":" + number(p.maximum)
+                + ",\"initial\":" + number(p.initial) + ",\"kind\":";
+            escape(j, pp::paramKindName(p.kind));
+            j += ",\"options\":[";
+            for (std::size_t i = 0; i < p.options.size(); ++i) {
+                if (i > 0) {
+                    j += ',';
+                }
+                escape(j, p.options[i]);
+            }
+            j += "]}";
+        }
+        j += "]}";
+    }
+    j += "]";
+    char *out = static_cast<char *>(std::malloc(j.size() + 1));
+    std::memcpy(out, j.c_str(), j.size() + 1);
+    return out;
+}
+
+void pp_fx_free_string(char *text) { std::free(text); }
+
+void pp_fx_compressor_knob(double amount, double out[5])
+{
+    const auto k = pp::CompressorEffect::fromAmount(amount);
+    out[0] = k.threshold;
+    out[1] = k.ratio;
+    out[2] = k.attack;
+    out[3] = k.release;
+    out[4] = k.makeup;
+}
+
+} // extern "C"

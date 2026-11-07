@@ -46,6 +46,26 @@ fine.strips[0].busSends = [Send(to: 0, gain: 1)]
 fine.buses[0].outputSends = [Send(to: 0, gain: 1)]
 check("a good setup has no problems", fine.problems().isEmpty, "\(fine.problems())")
 check("hardware output is off by default", Settings().hardwareOutputEnabled == false)
+do {
+    let old = #"{"strips":[{"slot":0,"label":"Mic","source":{"virtual":{"slot":1}},"gain":0.5,"muted":false,"busSends":[],"outputSends":[]}],"buses":[{"slot":0,"label":"B","gain":1,"muted":false,"outputSends":[]}],"outputs":[{"slot":0,"label":"O","sink":{"virtual":{"slot":1}},"gain":1,"muted":false}]}"#
+    let loaded = try JSONDecoder().decode(Settings.self, from: Data(old.utf8))
+    check("strips, buses and outputs from before effects load with none",
+        loaded.strips[0].gain == 0.5 && loaded.strips[0].effects.isEmpty && loaded.buses[0].effects.isEmpty
+            && loaded.outputs[0].effects.isEmpty)
+    var chain = [EffectSetting(type: "eq", params: ["b1Gain": 3, "b1Freq": 120]),
+        EffectSetting(type: "compressor", enabled: false, params: ["amount": 60])]
+    check("the engine's spec: one line per effect, parameters sorted",
+        chain.spec == "eq\t1\tb1Freq=120.0;b1Gain=3.0\ncompressor\t0\tamount=60.0", chain.spec)
+    check("all effects off bypasses each, keeping the chain", chain.spec(on: false) == "eq\t0\tb1Freq=120.0;b1Gain=3.0\ncompressor\t0\tamount=60.0")
+    check("and on gives each its own switch back", chain.spec(on: true) == chain.spec)
+    chain.append(contentsOf: Array(repeating: EffectSetting(type: "gain"), count: 7))
+    var full = Settings()
+    full.strips = [Strip(slot: 0, label: "Mic", source: .virtual(slot: 0))]
+    full.strips[0].effects = chain
+    check("more than 8 effects is reported", full.problems().contains { $0.contains("effects") }, "\(full.problems())")
+} catch {
+    check("strips from before effects load", false, "\(error)")
+}
 check("rate and buffer default to 48 kHz and 128", Settings().sampleRate == 48000 && Settings().bufferFrames == 128)
 var odd = Settings()
 odd.sampleRate = 22050
