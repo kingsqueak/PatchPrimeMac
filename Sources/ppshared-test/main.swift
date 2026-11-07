@@ -12,14 +12,14 @@ func check(_ name: String, _ ok: Bool, _ detail: String = "") {
     if !ok { failures += 1 }
 }
 
-let oldM2 = DeviceSignature(uid: "com_motu_driver_coreuac_control_interface:m20000063324", name: "M2",
-    transport: "USB", serial: "M20000063324")
-let newM2 = DeviceSignature(uid: "AppleUSBAudioEngine:MOTU:M2:M20000063324:1,2", name: "M2",
-    transport: "USB", serial: "M20000063324")
+let oldM2 = DeviceSignature(uid: "com_motu_driver_coreuac_control_interface:m2test000001", name: "M2",
+    transport: "USB", serial: "M2TEST000001")
+let newM2 = DeviceSignature(uid: "AppleUSBAudioEngine:MOTU:M2:M2TEST000001:1,2", name: "M2",
+    transport: "USB", serial: "M2TEST000001")
 let speakers = DeviceSignature(uid: "BuiltInSpeakerDevice", name: "Mac Studio Speakers", transport: "Built-in", serial: "")
 let dell = DeviceSignature(uid: "aa-bb:hdmi", name: "DELL S2722QC", transport: "HDMI", serial: "")
 
-// CASTER's trouble: the M2 changed driver and 12 sessions needed repointing by hand.
+// A device that changes driver (and UID) must not need every setup repointing by hand.
 check("device follows a driver change by serial", DeviceSignature.match(oldM2, in: [speakers, newM2]) == newM2)
 check("exact UID wins", DeviceSignature.match(speakers, in: [speakers, newM2]) == speakers)
 let movedDell = DeviceSignature(uid: "cc-dd:hdmi", name: "DELL S2722QC", transport: "HDMI", serial: "")
@@ -30,7 +30,7 @@ let otherM2 = DeviceSignature(uid: "AppleUSBAudioEngine:MOTU:M2:M2OTHER:1,2", na
 check("a different unit with a serial isn't taken for ours", DeviceSignature.match(oldM2, in: [otherM2]) == nil)
 check("an absent device is offline, not a wrong match", DeviceSignature.match(oldM2, in: [speakers]) == nil)
 
-// CASTER's trouble: a track with no channel, silent and unexplained.
+// A strip with no channel must be reported, not left silent and unexplained.
 var bad = Settings()
 bad.strips = [Strip(slot: 0, label: "RE20", source: .device(newM2, left: -2, right: -2))]
 check("a strip with no channel is reported", bad.problems().contains { $0.contains("no channel") }, "\(bad.problems())")

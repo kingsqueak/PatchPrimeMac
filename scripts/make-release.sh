@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 KC2RGW Chris
 # Builds a release: PatchPrimeMac-<version>.pkg and PatchPrimeMac-<version>.dmg (the
 # installer, the Uninstall app and a Read Me) in build/release. Apple Silicon only.
 #
@@ -53,6 +55,25 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$engine/Contents/MacOS
 cp "$bin/PatchPrimeMac" "$bin/patchprime-ctl" "$app/Contents/MacOS/"
 cp "$bin/PatchPrimeEngine" "$bin/patchprime-scan" "$engine/Contents/MacOS/"
 cp docs/user-guide.md packaging/uninstall.sh build/release-driver/ppdriver "$app/Contents/Resources/"
+# Debug symbols out: they hold the build machine's paths and aren't needed to run.
+strip -S "$app/Contents/MacOS/"* "$engine/Contents/MacOS/"* "$app/Contents/Resources/ppdriver"
+# The licences of the code built in: ours (GPL) and the third-party notices the BSD
+# and MIT licences ask a binary to carry.
+notices="$out/THIRD-PARTY-NOTICES.txt"
+{
+    echo "PatchPrimeMac includes the following third-party software."
+    echo "Its own licence is GPL-3.0-or-later (LICENSE.txt). Source: https://github.com/kingsqueak/PatchPrimeMac"
+    for part in "RNNoise (Xiph.Org), noise suppression|Sources/RNNoise/COPYING" \
+                "libASPL (Victor Gaydov and contributors), the audio driver framework|third_party/libASPL/LICENSE" \
+                "libASPL: Apple sample code it is based on (2012)|third_party/libASPL/LICENSE.apple2012" \
+                "libASPL: Apple sample code it is based on (2020)|third_party/libASPL/LICENSE.apple2020"; do
+        echo; echo "=============================================================================="
+        echo "${part%%|*}"; echo "=============================================================================="; echo
+        cat "${part#*|}"
+    done
+} > "$notices"
+cp LICENSE "$app/Contents/Resources/LICENSE.txt"
+cp "$notices" "$app/Contents/Resources/"
 cat > "$app/Contents/Info.plist" <<PL
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -79,7 +100,7 @@ sed -e "s|<string>0.1</string>|<string>$version</string>|" -e "s|<key>CFBundleVe
 # The Uninstall app: the script asks, uninstall.sh does the work.
 uninstall_app="$out/Uninstall PatchPrimeMac.app"
 osacompile -o "$uninstall_app" packaging/Uninstall.applescript
-cp packaging/uninstall.sh build/release-driver/ppdriver "$uninstall_app/Contents/Resources/"
+cp packaging/uninstall.sh "$app/Contents/Resources/ppdriver" "$uninstall_app/Contents/Resources/"
 /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string com.kingsqueak.patchprimemac.uninstall" \
     -c "Add :CFBundleShortVersionString string $version" "$uninstall_app/Contents/Info.plist"
 
@@ -95,12 +116,17 @@ mkdir -p "$payload/Library/Audio/Plug-Ins/HAL"
 driver="$payload/Library/Audio/Plug-Ins/HAL/PatchPrimeMac.driver"
 cp -R build/release-driver/PatchPrimeMac.driver "$driver"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" -c "Set :CFBundleVersion $version" "$driver/Contents/Info.plist"
+strip -S "$driver/Contents/MacOS/"*
 codesign --force --sign - "$driver" # the driver stays ad-hoc: coreaudiod loads it either way
 codesign --verify --deep --strict "$app" && echo "app signature checks out"
 
 echo "== Installer"
 # macOS file attributes would go into the package as ._ files.
 xattr -cr "$payload" "$uninstall_app" 2>/dev/null || true
+# Nothing from the build machine's home folder goes out.
+if leaked=$(grep -r -l -a -F "$HOME" "$payload" "$uninstall_app"); then
+    echo "Build paths from $HOME are in:"; echo "$leaked"; exit 1
+fi
 scripts="$out/pkg-scripts"
 mkdir -p "$scripts"
 cat packaging/pkg-scripts/preinstall > "$scripts/preinstall"
@@ -130,12 +156,14 @@ mkdir -p "$stage"
 cp "$out/PatchPrimeMac-$version.pkg" "$stage/"
 cp -R "$uninstall_app" "$stage/"
 cp "packaging/Read Me.txt" "$stage/"
+cp LICENSE "$stage/LICENSE.txt"
+cp "$notices" "$stage/"
 hdiutil create -volname "PatchPrimeMac $version" -srcfolder "$stage" -format UDZO -ov \
     "$out/PatchPrimeMac-$version.dmg" >/dev/null
 rm -rf "$stage"
 # The staged apps go too: Spotlight would find them and Finder could open one instead
 # of the installed app.
-rm -rf "$payload" "$uninstall_app" "$scripts" "$resources"
+rm -rf "$payload" "$uninstall_app" "$scripts" "$resources" "$notices"
 
 echo "== Done"
 ls -lh "$out"/PatchPrimeMac-"$version".*

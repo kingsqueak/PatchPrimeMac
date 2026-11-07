@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 KC2RGW Chris
 // One instance, two ways: AVAudioUnit loaded out of process, rendered through its C
 // AudioUnit and its window from its AUAudioUnit. Silent: no audio device.
 #import <AVFoundation/AVFoundation.h>

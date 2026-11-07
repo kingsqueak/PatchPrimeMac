@@ -16,13 +16,17 @@ struct HelpTopic: Identifiable, Hashable {
 }
 
 enum HelpGuide {
-    /// The guide: from the app's bundle, or the source tree when run from a build folder.
+    /// The guide: from the app's bundle, or, run from a build folder, the source tree
+    /// it's in (found by looking upward, so no build machine's path is built in).
     static func load() -> (intro: [String], topics: [HelpTopic]) {
-        let bundled = Bundle.main.url(forResource: "user-guide", withExtension: "md")
-        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-            .appendingPathComponent("../../docs/user-guide.md").standardized
-        let url = bundled ?? source
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+        var url = Bundle.main.url(forResource: "user-guide", withExtension: "md")
+        var dir = Bundle.main.executableURL?.deletingLastPathComponent()
+        while url == nil, let d = dir, d.path != "/" {
+            let candidate = d.appendingPathComponent("docs/user-guide.md")
+            if FileManager.default.fileExists(atPath: candidate.path) { url = candidate }
+            dir = d.deletingLastPathComponent()
+        }
+        guard let url, let text = try? String(contentsOf: url, encoding: .utf8) else {
             return (["The user guide couldn't be found."], [])
         }
         return parse(text)

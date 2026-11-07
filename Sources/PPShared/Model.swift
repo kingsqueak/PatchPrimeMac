@@ -278,7 +278,7 @@ public struct Settings: Codable, Equatable, Sendable {
     public func buffer(for uid: String) -> Int { deviceBuffers[uid] ?? bufferFrames }
 
     /// A setup that would misbehave is refused, with the reason, rather than stored.
-    /// CASTER's M2 tracks lost their channels and went silent with no word why.
+    /// (A strip that silently lost its channel would just go quiet with no word why.)
     public func problems() -> [String] {
         var found: [String] = []
         func endpoint(_ e: Endpoint, _ what: String) {

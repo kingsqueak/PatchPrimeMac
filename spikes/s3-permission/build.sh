@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 KC2RGW Chris
 # Builds PPS3.app with its login-item helper inside.
 # Usage: build.sh [signing identity, default ad-hoc] [build tag] [keychain] [bundle id suffix]
 # A different tag makes a different binary, as a new release would be.

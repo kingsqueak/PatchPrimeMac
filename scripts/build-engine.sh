@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 KC2RGW Chris
 # Builds PatchPrimeEngine.app into build/. Signs with this Mac's development
 # certificate if it has one, so microphone permission survives rebuilds.
 set -euo pipefail

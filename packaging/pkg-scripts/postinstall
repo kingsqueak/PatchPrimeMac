@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 KC2RGW Chris
 # After installing: coreaudiod restarts to load the driver (all audio stops for a
 # moment), and the logged-in user's engine is set up and started, so sound comes back
 # without opening the app. Other users get theirs when they first open PatchPrimeMac.

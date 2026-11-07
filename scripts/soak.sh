@@ -1,4 +1,6 @@
 #!/bin/zsh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 KC2RGW Chris
 # A long run: logs the engine's state every 10 minutes and keeps the Mac from idle
 # sleeping meanwhile. Usage: soak.sh [hours]. Stops by itself.
 hours=${1:-24}

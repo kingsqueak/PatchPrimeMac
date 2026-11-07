@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 KC2RGW Chris
 # Installs and starts the engine helper for this user. No sudo needed.
 # It's silent on hardware until `patchprime-ctl hardware on`.
 set -euo pipefail

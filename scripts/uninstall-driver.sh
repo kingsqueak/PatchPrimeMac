@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 KC2RGW Chris
 # Removes the PatchPrimeMac driver and everything it left. Run with sudo.
 # This interrupts ALL audio on the Mac for a moment. Turn amplifiers down first.
 set -euo pipefail

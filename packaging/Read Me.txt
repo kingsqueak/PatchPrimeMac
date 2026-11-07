@@ -28,3 +28,10 @@ Uninstalling
 Open "Uninstall PatchPrimeMac" (here, or Help > Uninstall PatchPrimeMac... in the app).
 It removes everything PatchPrimeMac added and puts your default sound devices back; you
 choose whether to keep your settings, presets and scenes.
+
+Licence
+-------
+PatchPrimeMac is free software under the GNU GPL, version 3 or later (LICENSE.txt).
+It includes RNNoise (BSD) and libASPL (MIT); their notices are in
+THIRD-PARTY-NOTICES.txt, here and inside the app. The source code is at
+https://github.com/kingsqueak/PatchPrimeMac

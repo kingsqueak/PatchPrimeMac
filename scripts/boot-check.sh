@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 KC2RGW Chris
 # After a restart or login: is PatchPrimeMac up, and is it as it was?
 #   scripts/boot-check.sh save    records how things are now (before restarting)
 #   scripts/boot-check.sh         compares with that

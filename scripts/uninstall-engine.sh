@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 KC2RGW Chris
 # Removes the engine helper. No sudo needed.
 # Add --delete-settings to remove saved settings as well; otherwise they're kept.
 set -euo pipefail

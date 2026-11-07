@@ -1,8 +1,11 @@
 #!/bin/zsh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 KC2RGW Chris
 # S3: signing and launch method, two builds each. Cleans up after itself.
 K="$1"; H="$2"
-B=~/src/PatchPrimeMac/spikes/s3-permission/build.sh
-cd ~/src/PatchPrimeMac/build/s3
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+B="$root/spikes/s3-permission/build.sh"
+cd "$root/build/s3"
 L="$HOME/Library/Application Support/PatchPrimeMacS3/log.txt"
 uid=$(id -u)
 waitlog(){ for i in {1..75}; do grep -q 'result:\|M2 not found' "$L" 2>/dev/null && break; sleep 2; done; if [ -f "$L" ]; then grep -E 'build|mic status at start|answered|result' "$L" | sed 's/^[^ ]* pid [0-9]* //'; else echo 'NO LOG: helper did not run'; fi; }

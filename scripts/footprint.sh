@@ -1,10 +1,12 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 KC2RGW Chris
 # Lists everything PatchPrimeMac has left on this Mac: files, launchd jobs, processes,
 # background item records, permissions, shared memory and macOS audio settings.
 # Read-only. Run as yourself (sudo is fine too; it then checks the invoking user).
 # Exit status 0 means nothing found.
 #
-# The development tree (~/src/PatchPrimeMac) is not counted: it's the source.
+# The development tree (this source checkout) is not counted: it's the source.
 set -uo pipefail
 # Whose Mac account to check: PP_USER, else whoever ran sudo, else yourself. Under
 # "sudo -u you", SUDO_USER is root, which would check the wrong home.

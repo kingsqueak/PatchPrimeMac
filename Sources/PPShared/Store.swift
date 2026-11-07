@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 KC2RGW Chris
 //
-// Saves settings so a crash or a bad save can't lose them. CASTER's autosave once
-// wrote a broken session over a good one. Here a save goes to a temporary file and
+// Saves settings so a crash or a bad save can't lose them. An autosave that
+// writes a broken file over a good one loses a whole setup. Here a save goes to a temporary file and
 // is renamed into place, the last few versions are kept, and a file that can't be
 // read is set aside rather than overwritten, with the newest good backup loaded.
 

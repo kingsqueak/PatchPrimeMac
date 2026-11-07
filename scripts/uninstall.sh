@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 KC2RGW Chris
 # Removes all of PatchPrimeMac (see packaging/uninstall.sh), then lists anything left.
 #   sudo scripts/uninstall.sh [--delete-settings]
 set -uo pipefail

@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 KC2RGW Chris
 # Before installing or upgrading: the logged-in user's engine and app stop, so their
 # files can be replaced. Audio through PatchPrimeMac stops until postinstall.
 user=$(stat -f%Su /dev/console)
