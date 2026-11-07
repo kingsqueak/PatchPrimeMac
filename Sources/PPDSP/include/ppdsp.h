@@ -69,6 +69,26 @@ void pp_fx_compressor_knob(double amount, double out[5]);
 // band alone (whether or not it's on), 0 all the bands that are on.
 void pp_fx_eq_curve(const char *params, int band, double rate, const double *freqs, double *dbOut, int count);
 
+// External effects: a chain line whose type starts "au:" (an Audio Unit; later
+// "vst3:", "clap:") holds a slot that passes the sound through until a processor is
+// attached. Whoever loads the plugin (the helper) attaches it; it's called on the
+// audio thread for each block, planar, in place, and returns 0, or nonzero once it's
+// gone (its process crashed), after which the slot passes the sound through and says
+// so until something else is attached.
+typedef struct PPExternal {
+    void *context;
+    int (*process)(void *context, float *const *planes, int channels, int frames);
+    int latency; // samples
+} PPExternal;
+// Attaches `ext` (owned by the caller, kept alive while attached) to the effect at
+// `index`, or detaches with NULL. Returns 0, or -1 if that effect isn't external.
+int pp_fx_attach(PPFx *fx, int index, const PPExternal *ext);
+// 1 if the external effect at `index` has stopped (its process went away).
+int pp_fx_external_dead(const PPFx *fx, int index);
+// The chain's own copy (it may be rebuilt): how many effects, and whether one is external.
+int pp_fx_count(const PPFx *fx);
+int pp_fx_is_external(const PPFx *fx, int index);
+
 // Every built-in effect type with its label and parameters, as JSON:
 // [{"type","label","key":bool,"params":[{"name","label","unit","min","max",
 //   "initial","kind","options":[...]}]}]. Free with pp_fx_free_string.

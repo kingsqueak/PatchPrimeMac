@@ -126,6 +126,25 @@ double pp_engine_output_ratio_ppm(PPEngine *e, int output);
 
 int pp_shm_open(const char *name, int flags, int mode);
 
+// An Audio Unit in a chain (see au.cpp). The caller loads it, sets its stream formats
+// (planar float, `inputs` and `outputs` channels at the engine's rate), its maximum
+// frames, and initialises it; then attaches pp_au_external to the chain's slot with
+// pp_fx_attach. Destroy only once it's detached and the audio thread is past it, and
+// before disposing of the AudioUnit.
+typedef struct PPAU PPAU;
+struct PPExternal;
+// It renders on a realtime worker thread of its own; the engine waits at most half a
+// block for it, else that block is dry.
+PPAU *pp_au_create(void *audioUnit, int inputs, int outputs, int maxFrames, int latencySamples, double sampleRate);
+const struct PPExternal *pp_au_external(PPAU *au);
+void pp_au_destroy(PPAU *au);
+// From any thread: its process has gone (the system said so); stop calling it at once.
+void pp_au_mark_gone(PPAU *au);
+// The first render call's time, the slowest's, and how many (for diagnosis).
+void pp_au_timing(const PPAU *au, double *firstMs, double *slowestMs, unsigned long long *calls);
+// Blocks the engine played dry because the plugin wasn't back in time.
+unsigned long long pp_au_late(const PPAU *au);
+
 // The clock bridge, exposed for the offline tests.
 typedef struct PPBridge PPBridge;
 PPBridge *pp_bridge_create(double producerRate, double consumerRate, int producerBlock,

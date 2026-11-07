@@ -46,6 +46,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     var wiring: [String] = []
     let startedAt = Date().timeIntervalSince1970
     let scanner = PluginScanner()
+    let plugins = PluginHost()
     /// What's cued: "s0", "b1", "o2". Not saved, as on Linux: cue is for the moment.
     var cued: Set<String> = []
     // Chains measuring their levels for an open editor, and when it last asked.
@@ -68,6 +69,11 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
 
     func start() {
         scanner.changed = {} // the GUI polls the snapshot
+        plugins.mixerNow = { [weak self] in self?.core.flatMap { pp_engine_mixer($0) } }
+        plugins.goneNow = { [weak self] in
+            guard let self, let core = self.core, let mixer = pp_engine_mixer(core) else { return }
+            if self.plugins.reapDead(mixer) { self.apply() }
+        }
         let loaded = store.load()
         settings = loaded.settings
         note = loaded.note
@@ -108,6 +114,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         }
         core = created
         engineRate = rate
+        plugins.rate = rate
         engineBlock = settings.bufferFrames
         watchRate(hidden)
     }
@@ -119,6 +126,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         pendingRestart = nil
         if let core { pp_engine_destroy(core) }
         core = nil
+        plugins.releaseAll(now: true) // no audio thread has them now
         boundInputs = [:]
         boundOutputs = [:]
         prepared = [:]
@@ -296,7 +304,21 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         }
         applyEffects(mixer)
         applyCue(mixer)
+
         pp_engine_enable_hardware_output(core, settings.hardwareOutputEnabled ? 1 : 0, settings.hardwareLimit)
+    }
+
+    /// Plugins that aren't running, and why: read fresh each time.
+    var pluginNotes: [String] {
+        plugins.problems.sorted { $0.key < $1.key }.map { key, problem in
+            let parts = key.split(separator: "#")
+            let name = allEffects.first { $0.type == String(parts.count > 2 ? parts[2] : "") }?.plugin ?? "A plugin"
+            return "\(name): \(problem)"
+        }
+    }
+
+    var allEffects: [EffectSetting] {
+        settings.strips.flatMap(\.effects) + settings.buses.flatMap(\.effects) + settings.outputs.flatMap(\.effects)
     }
 
     func applyCue(_ mixer: OpaquePointer) {
@@ -321,6 +343,19 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
                 appliedFx[key] = marked
             }
         }
+        // Plugins: what each chain holds, where.
+        var wantedPlugins: [String: (kind: Int32, slot: Int, index: Int, effect: EffectSetting, channels: Int)] = [:]
+        func plugins(_ chain: String, _ kind: Int32, _ slot: Int, _ effects: [EffectSetting], mono: Bool) {
+            for (i, e) in effects.enumerated() where e.isPlugin {
+                wantedPlugins[PluginHost.key(chain, i, e, mono ? 1 : 2)] = (kind, slot, i, e, mono ? 1 : 2)
+            }
+        }
+        for strip in settings.strips {
+            plugins("s\(strip.slot)", Int32(PP_KIND_STRIP), strip.slot, strip.effects, mono: appliedFx["s\(strip.slot)"]?.hasPrefix("mono\n") ?? false)
+        }
+        for bus in settings.buses { plugins("b\(bus.slot)", Int32(PP_KIND_BUS), bus.slot, bus.effects, mono: false) }
+        for output in settings.outputs { plugins("o\(output.slot)", Int32(PP_KIND_OUTPUT), output.slot, output.effects, mono: false) }
+        self.plugins.sync(mixer, wanted: wantedPlugins)
         func setKey(_ key: String, _ kind: Int32, _ slot: Int, _ effects: [EffectSetting]) {
             let from = effects.key ?? -1
             guard appliedKeys[key] != from else { return }
@@ -344,6 +379,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             var mono = false
             if let strip, case let .device(_, left, right) = strip.source {
                 mono = left == right && !strip.effects.contains { $0.type == "reverb" || $0.type == "leveler" }
+                    && strip.effects.filter(\.isPlugin).allSatisfy { ($0.channels ?? "") == "m" }
             }
             pp_mixer_set_input_mono(mixer, Int32(slot), mono ? 1 : 0)
             set("s\(slot)", Int32(PP_KIND_STRIP), slot, strip?.effects ?? [], strip?.effectsOn ?? true, mono)
@@ -474,6 +510,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         guard let core else { return }
         if let mixer = pp_engine_mixer(core) {
             pp_mixer_collect(mixer)
+            if plugins.reapDead(mixer) { apply() } // load them again
             let now = Date()
             for (key, asked) in metering where now.timeIntervalSince(asked) > 2 {
                 if let (kind, slot) = chainAddress(key), let fx = pp_mixer_effects(mixer, kind, Int32(slot)) {
@@ -536,6 +573,9 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
 
     func shutDown() {
         pendingSave?.perform()
+        if let core { pp_engine_destroy(core) }
+        core = nil
+        plugins.releaseAll(now: true)
         setDriverRate(ppm: 0)
         SharedMeters.removeName()
         exit(0)
@@ -912,6 +952,31 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
                 return Reply(ok: false, text: "fx-all strip|bus|out <n> on|off")
             }
             return commit(next, on ? "effects on" : "effects bypassed")
+        case "fx-add-plugin" where args.count >= 3:
+            // fx-add-plugin strip|bus|out <n> <plugin id> [position]: the version that
+            // fits the chain (Waves' (m) on a mono mic, (s) on stereo).
+            let a = Array(args)
+            guard let slot = Int(a[1]) else { break }
+            guard let entry = AudioUnitCatalog.list(kinds: [.effect, .musicEffect]).first(where: { $0.id == a[2] }) else {
+                return Reply(ok: false, text: "no plugin \(a[2]). Try: plugins-list")
+            }
+            var monoSource = false
+            if a[0] == "strip", let strip = next.strips.first(where: { $0.slot == slot }), case let .device(_, l, r) = strip.source {
+                monoSource = l == r
+            }
+            guard let variant = entry.variant(channels: monoSource ? 1 : 2) else {
+                return Reply(ok: false, text: "\(entry.name) only comes in surround versions")
+            }
+            var effect = EffectSetting(type: variant.id)
+            effect.plugin = "\(entry.maker) \(entry.name)"
+            effect.channels = variant.channels
+            if let problem = editChain(&next, a[0], slot, { chain in
+                guard chain.count < maxEffects else { return "that chain is full (\(maxEffects) effects)" }
+                let at = a.count > 3 ? min(max(Int(a[3]) ?? chain.count, 0), chain.count) : chain.count
+                chain.insert(effect, at: at)
+                return nil
+            }) { return Reply(ok: false, text: problem) }
+            return commit(next, "added \(variant.name)")
         case "plugins-list":
             // Every plugin (the filter only marks what's hidden), with what the scan found.
             let filter = settings.pluginFilter
@@ -931,6 +996,10 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         case "plugins-scan-stop":
             scanner.stop()
             return Reply(ok: true, text: "stopped")
+        case "plugins-timing":
+            return Reply(ok: true, text: (plugins.lastDead + plugins.timings).joined(separator: "\n"))
+        case "plugins-host":
+            return Reply(ok: true, text: "\(plugins.hostPID)")
         case "plugins-status":
             let s = scanner
             let line = s.scanning ? "scanning: \(s.done) of \(s.total); now \(s.current.joined(separator: ", "))" : "not scanning"
@@ -1117,7 +1186,8 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             var copy = next
             let problem = editChain(&copy, a[0], slot) { chain in
                 for (i, e) in chain.enumerated() {
-                    let label = catalog.first { $0.type == e.type }?.label ?? e.type
+                    let label = e.plugin.map { "\($0) (AU\(e.channels.map { $0.isEmpty ? "" : ", \($0)" } ?? ""))" }
+                        ?? catalog.first { $0.type == e.type }?.label ?? e.type
                     let params = e.params.keys.sorted().map { "\($0)=\(e.params[$0]!)" }.joined(separator: " ")
                     lines.append("\(i) \(label)\(e.enabled ? "" : " (bypassed)"): \(params)")
                 }
@@ -1158,6 +1228,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             plugins-list | plugins-scan new|all | plugins-scan-stop | plugins-status
             plugin-filter kind|maker|category|plugin <name> hide|show
             fx-preset-save|fx-preset-load strip|bus|out <n> <i> <name> | fx-preset-delete <type> <name>
+            fx-add-plugin strip|bus|out <n> <plugin id> [position]   an AU, the version that fits
             default output|input <virtual slot> | default-device output|input <device name>
             strip-remove <n> | bus-remove <n> | out-remove <n>
             virtual-list | virtual-add <slot> out|in <name> | virtual-rename <slot> <name> | virtual-remove <slot>
@@ -1172,7 +1243,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         var snap = Snapshot()
         snap.running = core != nil
         snap.engineStarted = startedAt
-        snap.note = ([note].compactMap { $0 } + wiring).joined(separator: "\n").nilIfEmpty
+        snap.note = ([note].compactMap { $0 } + wiring + pluginNotes).joined(separator: "\n").nilIfEmpty
         snap.settings = settings
         snap.offline = Array(offline)
         snap.devices = devices.filter { !$0.signature.uid.hasPrefix("PatchPrimeMac.") }.map { d in
@@ -1232,7 +1303,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         lines.append(String(format: "cycles %llu, underruns %llu, overruns %llu, re-locks %llu, longest gap %.2f ms, %d devices open",
             s.cycles, s.underruns, s.overruns, s.resyncs, s.maxGapMs, s.devices))
         if let note { lines.append("NOTE: \(note)") }
-        for problem in wiring { lines.append("NOTE: \(problem)") }
+        for problem in wiring + pluginNotes { lines.append("NOTE: \(problem)") }
         lines.append("clock: \(clockText)")
         lines.append(String(format: "engine %.1f kHz, %d-frame blocks (%.2f ms)", engineRate / 1000, engineBlock,
             Double(engineBlock) / engineRate * 1000))

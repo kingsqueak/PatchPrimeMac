@@ -27,7 +27,7 @@ let package = Package(
             dependencies: ["PPDSP"],
             path: "Sources/PPCore",
             cxxSettings: [.unsafeFlags(["-O3", "-ffast-math", "-fno-exceptions", "-fno-rtti"])],
-            linkerSettings: [.linkedFramework("CoreAudio")]),
+            linkerSettings: [.linkedFramework("CoreAudio"), .linkedFramework("AudioToolbox")]),
         .target(
             name: "PPShared",
             dependencies: ["PPCore"],
@@ -70,7 +70,8 @@ let package = Package(
         .executableTarget(
             name: "ppcore-test",
             dependencies: ["PPCore", "PPDSP"],
-            path: "Sources/ppcore-test"),
+            path: "Sources/ppcore-test",
+            swiftSettings: [.swiftLanguageMode(.v5)]),
     ],
     cxxLanguageStandard: .cxx2b
 )

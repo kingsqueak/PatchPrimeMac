@@ -8,6 +8,12 @@ dest="$HOME/Applications/PatchPrimeMac"
 plist="$HOME/Library/LaunchAgents/$label.plist"
 logs="$HOME/Library/Logs/PatchPrimeMac"
 launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+# Wait until launchd has let go of the old one (it may take a moment to stop its
+# plugins), or the new one can't be started in its place.
+for _ in $(seq 50); do
+    launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1 || break
+    sleep 0.1
+done
 mkdir -p "$dest" "$logs" "$HOME/Library/LaunchAgents"
 rm -rf "$dest/PatchPrimeEngine.app"
 cp -R "$root/build/PatchPrimeEngine.app" "$dest/"
@@ -26,5 +32,9 @@ cat > "$plist" <<PL
 </dict>
 </plist>
 PL
-launchctl bootstrap "gui/$(id -u)" "$plist"
+for try in 1 2 3; do
+    launchctl bootstrap "gui/$(id -u)" "$plist" && break
+    echo "Starting it failed; trying again ($try)."
+    sleep 1
+done
 echo "Engine installed and started."

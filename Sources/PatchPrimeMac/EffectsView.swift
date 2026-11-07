@@ -192,7 +192,12 @@ struct EffectCard: View {
                 Toggle("", isOn: Binding(get: { effect.enabled },
                     set: { model.send(words("fx-on", "\(index)", $0 ? "on" : "off")) }))
                     .toggleStyle(.switch).labelsHidden().controlSize(.small)
-                Text(info?.label ?? effect.type).font(.system(size: 13, weight: .semibold))
+                if effect.isPlugin {
+                    Text("AU").font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .padding(.horizontal, 4).background(Color.blue.opacity(0.3), in: RoundedRectangle(cornerRadius: 3))
+                }
+                Text(effect.plugin.map { "\($0)\(effect.channels.map { $0.isEmpty ? "" : " (\($0))" } ?? "")" } ?? info?.label ?? effect.type)
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(effect.enabled ? .primary : .secondary)
                 if !effect.enabled { Text("bypassed").font(.caption).foregroundStyle(.secondary) }
                 Spacer()
@@ -228,7 +233,7 @@ struct EffectCard: View {
                     .help("Remove")
             }
             .buttonStyle(.borderless)
-            if info == nil {
+            if info == nil && !effect.isPlugin {
                 Text("This effect isn't known to this version, so it's skipped.").font(.caption).foregroundStyle(.orange)
             }
             if effect.type == "ducker" {

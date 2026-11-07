@@ -71,6 +71,12 @@ public struct EffectSetting: Codable, Equatable, Sendable {
     public var params: [String: Double] = [:]
     /// For a ducker: the input strip it listens to (by slot), or none.
     public var key: Int?
+    /// For a plugin (type "au:..."): its name to show, the version of it in use ("m", "s",
+    /// "m->s", or "" for one with no versions), and its own state (a binary property list,
+    /// base64), restored when it loads.
+    public var plugin: String?
+    public var channels: String?
+    public var state: String?
 
     public init(type: String, enabled: Bool = true, params: [String: Double] = [:], key: Int? = nil) {
         self.type = type
@@ -78,6 +84,8 @@ public struct EffectSetting: Codable, Equatable, Sendable {
         self.params = params
         self.key = key
     }
+
+    public var isPlugin: Bool { type.hasPrefix("au:") || type.hasPrefix("vst3:") || type.hasPrefix("clap:") }
 
     /// The line the engine reads (see pp_fx_set): type, on, name=value pairs.
     var specLine: String {

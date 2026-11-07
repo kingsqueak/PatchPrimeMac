@@ -21,6 +21,59 @@
 
 namespace {
 
+bool isExternal(const std::string &type)
+{
+    return type.rfind("au:", 0) == 0 || type.rfind("vst3:", 0) == 0 || type.rfind("clap:", 0) == 0;
+}
+
+// A plugin's place in a chain: dry until something is attached, then that, on the
+// audio thread. If it reports it's gone, dry again, and flagged for the loader.
+class ExternalEffect final : public pp::Effect
+{
+public:
+    explicit ExternalEffect(std::string type) : m_type(std::move(type)) {}
+    std::string_view type() const override { return m_type; }
+    void prepare(double, int) override {}
+    void setParam(const std::string &, double) override {}
+    int latency() const override
+    {
+        const PPExternal *e = m_ext.load();
+        return e ? e->latency : 0;
+    }
+
+    void process(float *const *channels, int count, int frames) noexcept override
+    {
+        const PPExternal *e = m_ext.load(std::memory_order_acquire);
+        if (!e || m_dead.load(std::memory_order_relaxed)) {
+            return; // dry
+        }
+        if (e->process(e->context, channels, count, frames) != 0) {
+            m_dead.store(true, std::memory_order_relaxed);
+        }
+    }
+
+    void attach(const PPExternal *ext)
+    {
+        m_ext.store(ext, std::memory_order_release);
+        m_dead.store(false, std::memory_order_relaxed);
+    }
+
+    bool dead() const { return m_dead.load(std::memory_order_relaxed); }
+
+private:
+    std::string m_type;
+    std::atomic<const PPExternal *> m_ext{nullptr};
+    std::atomic<bool> m_dead{false};
+};
+
+std::unique_ptr<pp::Effect> make(const std::string &type)
+{
+    if (isExternal(type)) {
+        return std::make_unique<ExternalEffect>(type);
+    }
+    return pp::makeEffect(type);
+}
+
 struct Spec
 {
     std::string type;
@@ -120,7 +173,7 @@ int pp_fx_set_channels(PPFx *fx, const char *spec, double rate, int channels)
     std::vector<const Spec *> known;
     std::vector<std::string> types;
     for (const auto &s : wanted) {
-        if (pp::makeEffect(s.type)) {
+        if (make(s.type)) {
             known.push_back(&s);
             types.push_back(s.type);
         }
@@ -145,7 +198,7 @@ int pp_fx_set_channels(PPFx *fx, const char *spec, double rate, int channels)
     }
     std::vector<std::unique_ptr<pp::Effect>> made;
     for (const Spec *s : known) {
-        auto effect = pp::makeEffect(s->type);
+        auto effect = make(s->type);
         for (const auto &[name, value] : s->params) {
             effect->setParam(name, value);
         }
@@ -201,6 +254,43 @@ void pp_fx_resume(PPFx *fx)
             effect.resume();
         }
     }
+}
+
+int pp_fx_attach(PPFx *fx, int index, const PPExternal *ext)
+{
+    pp::EffectChain *chain = fx->processor.chain();
+    if (!chain || index < 0 || std::size_t(index) >= chain->size()) {
+        return -1;
+    }
+    auto *e = dynamic_cast<ExternalEffect *>(&chain->at(std::size_t(index)));
+    if (!e) {
+        return -1;
+    }
+    e->attach(ext);
+    return 0;
+}
+
+int pp_fx_external_dead(const PPFx *fx, int index)
+{
+    pp::EffectChain *chain = fx->processor.chain();
+    if (!chain || index < 0 || std::size_t(index) >= chain->size()) {
+        return 0;
+    }
+    const auto *e = dynamic_cast<const ExternalEffect *>(&chain->at(std::size_t(index)));
+    return e && e->dead() ? 1 : 0;
+}
+
+int pp_fx_count(const PPFx *fx)
+{
+    pp::EffectChain *chain = fx->processor.chain();
+    return chain ? int(chain->size()) : 0;
+}
+
+int pp_fx_is_external(const PPFx *fx, int index)
+{
+    pp::EffectChain *chain = fx->processor.chain();
+    return chain && index >= 0 && std::size_t(index) < chain->size()
+        && dynamic_cast<const ExternalEffect *>(&chain->at(std::size_t(index))) != nullptr ? 1 : 0;
 }
 
 int pp_fx_can_sleep(const PPFx *fx) { return fx->canSleep.load(std::memory_order_relaxed) ? 1 : 0; }

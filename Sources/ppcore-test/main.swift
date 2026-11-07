@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 KC2RGW Chris
 //
 // Offline tests of the mixer core. No audio device is touched.
+import AudioToolbox
 import Foundation
 import PPCore
 import PPDSP
@@ -623,6 +624,63 @@ do {
     check("uncueing crossfades back, no click", worst < 0.01, "\(worst)")
     check("and the headphones have their own mix again", abs(last - 0.3) < 1e-4, "\(last)")
     pp_mixer_destroy(m)
+}
+
+// An Audio Unit in a chain: Apple's EQ, loaded out of process, in the external slot.
+do {
+    var desc = AudioComponentDescription(componentType: kAudioUnitType_Effect, componentSubType: 0x6E626571 /* nbeq */,
+        componentManufacturer: kAudioUnitManufacturer_Apple, componentFlags: 0, componentFlagsMask: 0)
+    let component = AudioComponentFindNext(nil, &desc)!
+    var unit: AudioUnit?
+    let done = DispatchSemaphore(value: 0)
+    AudioComponentInstantiate(component, .loadOutOfProcess) { u, _ in unit = u; done.signal() }
+    while done.wait(timeout: .now()) == .timedOut { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+    let au = unit!
+    var f = AudioStreamBasicDescription(mSampleRate: 48000, mFormatID: kAudioFormatLinearPCM,
+        mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked | kAudioFormatFlagIsNonInterleaved | kAudioFormatFlagsNativeEndian,
+        mBytesPerPacket: 4, mFramesPerPacket: 1, mBytesPerFrame: 4, mChannelsPerFrame: 2, mBitsPerChannel: 32, mReserved: 0)
+    let size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+    AudioUnitSetProperty(au, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &f, size)
+    AudioUnitSetProperty(au, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 0, &f, size)
+    var maxFrames: UInt32 = 4096
+    AudioUnitSetProperty(au, kAudioUnitProperty_MaximumFramesPerSlice, kAudioUnitScope_Global, 0, &maxFrames, 4)
+    check("the EQ loads out of process and starts", AudioUnitInitialize(au) == noErr)
+    let wrapped = pp_au_create(au, 2, 2, 4096, 0, 48000)!
+    let m = pp_mixer_create(48000)!
+    pp_mixer_set_input_active(m, 0, 1)
+    pp_mixer_set_output_active(m, 0, 1)
+    pp_mixer_set_input_to_output(m, 0, 0, 1)
+    check("a chain takes a plugin's slot", pp_mixer_set_effects(m, Int32(PP_KIND_STRIP), 0, "au:aufx:nbeq:appl\t1\t\ngain\t1\tgainDb=6.0206") == 2)
+    let fx = pp_mixer_effects(m, Int32(PP_KIND_STRIP), 0)!
+    check("the slot is external, the gain isn't", pp_fx_is_external(fx, 0) == 1 && pp_fx_is_external(fx, 1) == 0)
+    func run() -> Float {
+        var phase = 0.0, peak: Float = 0
+        for block in 0..<200 {
+            let l = pp_mixer_input_left(m, 0)!, r = pp_mixer_input_right(m, 0)!
+            for i in 0..<128 { l[i] = Float(0.1 * sin(phase)); r[i] = l[i]; phase += 2 * Double.pi * 1000 / 48000 }
+            pp_mixer_process(m, 128)
+            if block > 100 { for i in 0..<128 { peak = max(peak, pp_mixer_output_left(m, 0)[i]) } }
+        }
+        return peak
+    }
+    let dry = run()
+    check(String(format: "before it's attached the slot is dry (%.3f: the tone, +6 dB)", dry), abs(dry - 0.2) < 0.002)
+    check("attaching", pp_fx_attach(fx, 0, pp_au_external(wrapped)) == 0 && pp_fx_attach(fx, 1, pp_au_external(wrapped)) == -1)
+    let start = DispatchTime.now().uptimeNanoseconds
+    let wet = run()
+    let seconds = Double(DispatchTime.now().uptimeNanoseconds - start) / 1e9
+    check(String(format: "the flat EQ passes the tone through (%.3f), %.3f ms a block with the handoff, %llu blocks late",
+        wet, 1000 * seconds / 200, pp_au_late(wrapped)), abs(wet - 0.2) < 0.002 && pp_fx_external_dead(fx, 0) == 0)
+    // A rebuilt chain (a new effect added in front) has a fresh, empty slot.
+    pp_mixer_set_effects(m, Int32(PP_KIND_STRIP), 0, "gain\t1\tgainDb=0\nau:aufx:nbeq:appl\t1\t\ngain\t1\tgainDb=6.0206")
+    let fresh = pp_mixer_effects(m, Int32(PP_KIND_STRIP), 0)!
+    check("a rebuilt chain's slot starts empty", pp_fx_is_external(fresh, 1) == 1 && pp_fx_attach(fresh, 1, pp_au_external(wrapped)) == 0)
+    _ = run()
+    pp_mixer_collect(m)
+    pp_mixer_destroy(m)
+    pp_au_destroy(wrapped)
+    AudioUnitUninitialize(au)
+    AudioComponentInstanceDispose(au)
 }
 
 print(failures == 0 ? "all passed" : "\(failures) FAILED")
