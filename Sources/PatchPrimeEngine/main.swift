@@ -306,6 +306,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         }
         applyEffects(mixer)
         applyCue(mixer)
+        syncDeviceNames()
 
         pp_engine_enable_hardware_output(core, settings.hardwareOutputEnabled ? 1 : 0, settings.hardwareLimit)
     }
@@ -347,6 +348,40 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
 
     var allEffects: [EffectSetting] {
         settings.strips.flatMap(\.effects) + settings.buses.flatMap(\.effects) + settings.outputs.flatMap(\.effects)
+    }
+
+    // MARK: Virtual device names
+
+    /// macOS shows each virtual device as "Patch <label>": the label of the strip or output
+    /// that uses it, so one name covers both. A device nothing uses keeps its own name.
+    static let devicePrefix = "Patch "
+    var appliedNames: [Int: String] = [:]
+    var lastWantedNames: [Int: String] = [:]
+
+    static func bare(_ name: String) -> String {
+        name.hasPrefix(devicePrefix) ? String(name.dropFirst(devicePrefix.count)) : name
+    }
+
+    func virtualDevices() -> [(slot: Int, output: Bool, name: String)] {
+        driverList().split(separator: "\n").compactMap { line in
+            let parts = line.split(separator: "\t", maxSplits: 2).map(String.init)
+            guard parts.count == 3, let slot = Int(parts[0]) else { return nil }
+            return (slot, parts[1] == "out", parts[2])
+        }
+    }
+
+    func syncDeviceNames() {
+        var wanted: [Int: String] = [:]
+        for strip in settings.strips { if case let .virtual(slot) = strip.source, wanted[slot] == nil { wanted[slot] = strip.label } }
+        for output in settings.outputs { if case let .virtual(slot) = output.sink, wanted[slot] == nil { wanted[slot] = output.label } }
+        // Only ask the driver when the names wanted have changed (apply runs for every fader move).
+        guard wanted != lastWantedNames || appliedNames.isEmpty else { return }
+        lastWantedNames = wanted
+        for device in virtualDevices() {
+            let name = Self.devicePrefix + Self.bare(wanted[device.slot] ?? device.name)
+            if device.name != name { _ = driverCommand("rename \(device.slot) \(name)") }
+            appliedNames[device.slot] = name
+        }
     }
 
     func applyCue(_ mixer: OpaquePointer) {
@@ -712,7 +747,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             let (source, error) = endpoint(args.dropFirst(), input: true)
             guard let source else { return Reply(ok: false, text: error ?? "bad source") }
             guard let slot = nextSlot(next.strips.map(\.slot), Int(PP_MAX_INPUTS)) else { return Reply(ok: false, text: "no strips left") }
-            next.strips.append(Strip(slot: slot, label: args.first!, source: source))
+            next.strips.append(Strip(slot: slot, label: Self.bare(args.first!), source: source))
             return commit(next, "strip \(slot) added")
         case "strip-source" where args.count >= 3, "out-sink" where args.count >= 3:
             // Points an existing strip or output at another device, keeping its sends,
@@ -751,7 +786,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             let (sink, error) = endpoint(args.dropFirst(), input: false)
             guard let sink else { return Reply(ok: false, text: error ?? "bad output") }
             guard let slot = nextSlot(next.outputs.map(\.slot), Int(PP_MAX_OUTPUTS)) else { return Reply(ok: false, text: "no outputs left") }
-            next.outputs.append(Output(slot: slot, label: args.first!, sink: sink))
+            next.outputs.append(Output(slot: slot, label: Self.bare(args.first!), sink: sink))
             return commit(next, "output \(slot) added")
         case "out-remove" where args.count == 1:
             guard let slot = Int(args.first!) else { break }
@@ -1263,9 +1298,27 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             return commit(next, "hardware output \(next.hardwareOutputEnabled ? "ON" : "off")")
         case "virtual-list":
             return Reply(ok: true, text: driverList().isEmpty ? "no virtual devices" : driverList())
-        case "virtual-add" where args.count >= 3, "virtual-rename" where args.count >= 2, "virtual-remove" where args.count == 1:
-            let text = verb.replacingOccurrences(of: "virtual-", with: "") + " " + args.joined(separator: " ")
-            let answer = driverCommand(text)
+        case "virtual-add" where args.count >= 3:
+            // virtual-add <slot> out|in <name>: macOS shows it as "Patch <name>".
+            let a = Array(args)
+            let name = Self.devicePrefix + Self.bare(a[2...].joined(separator: " "))
+            let answer = driverCommand("add \(a[0]) \(a[1]) \(name)")
+            appliedNames = [:]
+            return Reply(ok: answer == "ok", text: answer)
+        case "virtual-rename" where args.count >= 2:
+            // The device and the strip or output using it share one name.
+            let a = Array(args)
+            guard let slot = Int(a[0]) else { break }
+            let label = Self.bare(a[1...].joined(separator: " "))
+            for i in next.strips.indices { if case .virtual(slot) = next.strips[i].source { next.strips[i].label = label } }
+            for i in next.outputs.indices { if case .virtual(slot) = next.outputs[i].sink { next.outputs[i].label = label } }
+            let answer = driverCommand("rename \(slot) \(Self.devicePrefix + label)")
+            appliedNames = [:]
+            guard answer == "ok" else { return Reply(ok: false, text: answer) }
+            return commit(next, "renamed")
+        case "virtual-remove" where args.count == 1:
+            let answer = driverCommand("remove \(args.first!)")
+            appliedNames = [:]
             return Reply(ok: answer == "ok", text: answer)
         case "help":
             return Reply(ok: true, text: """
