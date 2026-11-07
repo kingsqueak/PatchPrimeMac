@@ -18,6 +18,18 @@ public struct EffectParamInfo: Codable, Sendable, Hashable, Identifiable {
     public var kind: String
     public var options: [String]
 
+    public init(name: String, label: String, unit: String, min: Double, max: Double, initial: Double,
+        kind: String, options: [String]) {
+        self.name = name
+        self.label = label
+        self.unit = unit
+        self.min = min
+        self.max = max
+        self.initial = initial
+        self.kind = kind
+        self.options = options
+    }
+
     /// A value made valid: clamped, and whole for a choice or toggle.
     public func valid(_ value: Double) -> Double {
         let clamped = Swift.min(max, Swift.max(min, value.isFinite ? value : initial))
@@ -32,6 +44,13 @@ public struct EffectInfo: Codable, Sendable, Hashable, Identifiable {
     /// Listens to another strip (a ducker). Not wired up yet on the Mac.
     public var key: Bool
     public var params: [EffectParamInfo]
+
+    public init(type: String, label: String, key: Bool, params: [EffectParamInfo]) {
+        self.type = type
+        self.label = label
+        self.key = key
+        self.params = params
+    }
 
     public func param(_ name: String) -> EffectParamInfo? { params.first { $0.name == name } }
 

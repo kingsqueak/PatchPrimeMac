@@ -85,6 +85,40 @@ do {
     check("an older settings file loads", false, "\(error)")
 }
 
+// Presets.
+do {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("pppresets-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    var presets = PresetStore(folder: dir)
+    check("no preset file is no presets", presets.load() && presets.chainNames.isEmpty)
+    let chain = [EffectSetting(type: "gate", enabled: false, params: ["threshold": -40]), EffectSetting(type: "compressor", params: ["amount": 70])]
+    check("a chain saves under a trimmed name", presets.saveChain("  RE20 streaming ", chain) && presets.chainNames == ["RE20 streaming"])
+    _ = presets.saveChain("apple", chain)
+    check("names sort without regard to case", presets.chainNames == ["apple", "RE20 streaming"], "\(presets.chainNames)")
+    var again = PresetStore(folder: dir)
+    again.load()
+    check("chains survive a reload", again.chain("RE20 streaming") == chain)
+    check("built-in voice chains are there", again.chain("Podcast voice")?.count == 6 && BuiltInChains.names.count == 5)
+    check("a saved chain with a built-in's name wins", again.saveChain("Natural voice", chain) && again.chain("Natural voice") == chain)
+    check("a chain can be deleted", again.removeChain("apple") && again.chain("apple") == nil)
+    check("an effect preset is stored on, whatever it was", again.saveEffect("Tight", chain[0]) && again.effect("gate", "Tight")?.enabled == true)
+    check("effect presets are listed by type", again.effectNames == ["gate": ["Tight"]])
+    check("and can be deleted", again.removeEffect("gate", "Tight") && again.effectNames.isEmpty)
+    try "{ not json".write(to: dir.appendingPathComponent("presets.json"), atomically: true, encoding: .utf8)
+    var broken = PresetStore(folder: dir)
+    check("an unreadable file is reported", !broken.load() && broken.lastError != nil)
+    check("and not overwritten by a save", !broken.saveChain("x", chain)
+        && (try? String(contentsOf: dir.appendingPathComponent("presets.json"), encoding: .utf8)) == "{ not json")
+    let info = EffectInfo(type: "gate", label: "Gate", key: false, params: [
+        EffectParamInfo(name: "threshold", label: "Threshold", unit: "dB", min: -80, max: 0, initial: -50, kind: "linear", options: []),
+        EffectParamInfo(name: "range", label: "Range", unit: "dB", min: 0, max: 80, initial: 40, kind: "linear", options: [])])
+    let filled = EffectSetting(type: "gate", params: ["threshold": -200, "bogus": 1]).filled(from: [info])
+    check("loading fills what a preset leaves out, clamps, and drops unknown names",
+        filled.params == ["threshold": -80, "range": 40], "\(filled.params)")
+} catch {
+    check("presets", false, "\(error)")
+}
+
 // Store.
 let folder = FileManager.default.temporaryDirectory.appendingPathComponent("ppshared-\(UUID().uuidString)")
 defer { try? FileManager.default.removeItem(at: folder) }

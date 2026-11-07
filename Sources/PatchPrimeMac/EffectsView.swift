@@ -33,6 +33,8 @@ struct EffectsEditor: View {
     var slot: Int
     var label: String
     var done: () -> Void
+    @State private var saving = false
+    @State private var presetName = ""
 
     var chainOn: Bool {
         let s = model.snapshot.settings
@@ -74,6 +76,35 @@ struct EffectsEditor: View {
                     .toggleStyle(.switch)
                     .disabled(effects.isEmpty)
                     .help("Bypass every effect here at once. Each effect keeps its own switch for when they're back on.")
+                Menu("Presets") {
+                    Section("Built in") {
+                        ForEach(model.snapshot.builtInChains, id: \.self) { name in
+                            Button(name) { model.send("preset-load", stage.verb, "\(slot)", name) }
+                        }
+                    }
+                    if !model.snapshot.chainPresets.isEmpty {
+                        Section("Yours") {
+                            ForEach(model.snapshot.chainPresets, id: \.self) { name in
+                                Button(name) { model.send("preset-load", stage.verb, "\(slot)", name) }
+                            }
+                        }
+                    }
+                    Divider()
+                    Button("Save Chain as Preset…") {
+                        presetName = ""
+                        saving = true
+                    }
+                    .disabled(effects.isEmpty)
+                    if !model.snapshot.chainPresets.isEmpty {
+                        Menu("Delete") {
+                            ForEach(model.snapshot.chainPresets, id: \.self) { name in
+                                Button(name, role: .destructive) { model.send("preset-delete", name) }
+                            }
+                        }
+                    }
+                }
+                .fixedSize()
+                .help("Load a whole chain onto \(label), replacing what's here, or save this one")
                 Menu("Add Effect") {
                     ForEach(model.catalog.filter { !$0.key }) { info in
                         Button(info.label) { model.send("fx-add", stage.verb, "\(slot)", info.type) }
@@ -101,7 +132,16 @@ struct EffectsEditor: View {
                 .padding(14)
             }
         }
-        .frame(minWidth: 640, idealWidth: 640, minHeight: 520, idealHeight: 720)
+        .frame(minWidth: 720, idealWidth: 720, minHeight: 520, idealHeight: 720)
+        .alert("Save the chain on \(label)", isPresented: $saving) {
+            TextField("Preset name", text: $presetName)
+            Button("Cancel", role: .cancel) {}
+            Button("Save") { model.send("preset-save", stage.verb, "\(slot)", presetName) }
+                .disabled(presetName.trimmingCharacters(in: .whitespaces).isEmpty)
+        } message: {
+            Text(model.snapshot.chainPresets.contains(presetName.trimmingCharacters(in: .whitespaces))
+                ? "A preset with this name will be replaced." : "Load it onto any strip, bus or output.")
+        }
     }
 }
 
@@ -113,6 +153,8 @@ struct EffectCard: View {
     var count: Int
     var effect: EffectSetting
     var info: EffectInfo?
+    @State private var saving = false
+    @State private var presetName = ""
 
     func words(_ verb: String, _ rest: String...) -> [String] {
         [verb, stage.verb, "\(slot)"] + rest
@@ -149,6 +191,29 @@ struct EffectCard: View {
                     .foregroundStyle(effect.enabled ? .primary : .secondary)
                 if !effect.enabled { Text("bypassed").font(.caption).foregroundStyle(.secondary) }
                 Spacer()
+                Menu {
+                    let names = model.snapshot.effectPresets[effect.type] ?? []
+                    ForEach(names, id: \.self) { name in
+                        Button(name) { model.send(words("fx-preset-load", "\(index)", name)) }
+                    }
+                    if !names.isEmpty { Divider() }
+                    Button("Save \(info?.label ?? effect.type) Preset…") {
+                        presetName = ""
+                        saving = true
+                    }
+                    if !names.isEmpty {
+                        Menu("Delete") {
+                            ForEach(names, id: \.self) { name in
+                                Button(name, role: .destructive) { model.send("fx-preset-delete", effect.type, name) }
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "list.bullet")
+                }
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Presets for this effect alone")
                 Button { model.send(words("fx-move", "\(index)", "\(index - 1)")) } label: { Image(systemName: "chevron.up") }
                     .disabled(index == 0).help("Earlier in the chain")
                 Button { model.send(words("fx-move", "\(index)", "\(index + 1)")) } label: { Image(systemName: "chevron.down") }

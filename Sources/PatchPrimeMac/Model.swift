@@ -200,6 +200,9 @@ extension Snapshot {
         s.devices = [m2Row, speakers]
         s.engineRate = 48000
         s.engineBlock = 128
+        s.builtInChains = BuiltInChains.names
+        s.chainPresets = ["RE20 streaming"]
+        s.effectPresets = ["compressor": ["Gentle"]]
         s.virtuals = [VirtualRow(slot: 0, isOutput: true, name: "Desktop"), VirtualRow(slot: 1, isOutput: false, name: "Stream Mic")]
         return s
     }

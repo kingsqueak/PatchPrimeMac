@@ -37,6 +37,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         defer { pp_fx_free_string(text) }
         return EffectCatalog.decode(String(cString: text))
     }()
+    var presets = PresetStore(folder: Store.defaultFolder)
     var appliedFx: [String: String] = [:]
     var appliedSafety: [Int: Float] = [:]
     var offline: Set<String> = []
@@ -58,6 +59,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         let loaded = store.load()
         settings = loaded.settings
         note = loaded.note
+        if !presets.load() { note = presets.lastError }
         refreshDevices()
         var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
             mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
@@ -763,6 +765,74 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
                 return Reply(ok: false, text: "fx-all strip|bus|out <n> on|off")
             }
             return commit(next, on ? "effects on" : "effects bypassed")
+        case "preset-list":
+            var lines = ["built in: " + BuiltInChains.names.joined(separator: ", "),
+                "yours: " + (presets.chainNames.isEmpty ? "none" : presets.chainNames.joined(separator: ", "))]
+            for (type, names) in presets.effectNames.sorted(by: { $0.key < $1.key }) {
+                lines.append("\(type): " + names.joined(separator: ", "))
+            }
+            if let problem = presets.lastError { lines.append("NOTE: \(problem)") }
+            return Reply(ok: true, text: lines.joined(separator: "\n"))
+        case "preset-save" where args.count >= 3, "preset-load" where args.count >= 3:
+            // preset-save|load strip|bus|out <n> <name...>
+            let a = Array(args)
+            guard let slot = Int(a[1]) else { break }
+            let name = a[2...].joined(separator: " ")
+            if verb == "preset-save" {
+                var current: [EffectSetting] = []
+                var copy = next
+                if let problem = editChain(&copy, a[0], slot, { current = $0; return nil }) {
+                    return Reply(ok: false, text: problem)
+                }
+                guard !current.isEmpty else { return Reply(ok: false, text: "there are no effects to save") }
+                guard presets.saveChain(name, current) else {
+                    return Reply(ok: false, text: presets.lastError ?? "a preset needs a name")
+                }
+                return Reply(ok: true, text: "saved \"\(PresetStore.clean(name))\"")
+            }
+            guard let chain = presets.chain(name) else { return Reply(ok: false, text: "no preset called \"\(name)\"") }
+            let known = chain.filter { e in catalog.contains { $0.type == e.type } }.prefix(maxEffects)
+            if let problem = editChain(&next, a[0], slot, { $0 = known.map { $0.filled(from: catalog) }; return nil }) {
+                return Reply(ok: false, text: problem)
+            }
+            return commit(next, "loaded \"\(PresetStore.clean(name))\"")
+        case "preset-delete" where args.count >= 1:
+            let name = args.joined(separator: " ")
+            if BuiltInChains.chain(PresetStore.clean(name)) != nil, presets.presets.chains[PresetStore.clean(name)] == nil {
+                return Reply(ok: false, text: "the built-in presets can't be deleted")
+            }
+            return presets.removeChain(name) ? Reply(ok: true, text: "deleted") : Reply(ok: false, text: presets.lastError ?? "no preset called \"\(name)\"")
+        case "fx-preset-save" where args.count >= 4, "fx-preset-load" where args.count >= 4:
+            // fx-preset-save|load strip|bus|out <n> <i> <name...>
+            let a = Array(args)
+            guard let slot = Int(a[1]), let index = Int(a[2]) else { break }
+            let name = a[3...].joined(separator: " ")
+            if verb == "fx-preset-save" {
+                var effect: EffectSetting?
+                var copy = next
+                if let problem = editChain(&copy, a[0], slot, { chain in
+                    guard chain.indices.contains(index) else { return "no effect \(index)" }
+                    effect = chain[index]
+                    return nil
+                }) { return Reply(ok: false, text: problem) }
+                guard let effect, presets.saveEffect(name, effect) else {
+                    return Reply(ok: false, text: presets.lastError ?? "a preset needs a name")
+                }
+                return Reply(ok: true, text: "saved \"\(PresetStore.clean(name))\"")
+            }
+            if let problem = editChain(&next, a[0], slot, { chain in
+                guard chain.indices.contains(index) else { return "no effect \(index)" }
+                guard let preset = presets.effect(chain[index].type, name) else { return "no \(chain[index].type) preset called \"\(name)\"" }
+                var loaded = preset.filled(from: catalog)
+                loaded.enabled = chain[index].enabled
+                chain[index] = loaded
+                return nil
+            }) { return Reply(ok: false, text: problem) }
+            return commit(next, "loaded \"\(PresetStore.clean(name))\"")
+        case "fx-preset-delete" where args.count >= 2:
+            let a = Array(args)
+            return presets.removeEffect(a[0], a[1...].joined(separator: " "))
+                ? Reply(ok: true, text: "deleted") : Reply(ok: false, text: "no \(a[0]) preset called \"\(a[1...].joined(separator: " "))\"")
         case "fx-list" where args.count == 2:
             let a = Array(args)
             guard let slot = Int(a[1]) else { break }
@@ -803,6 +873,8 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             fx-add strip|bus|out <n> <type> [position] | fx-remove ... <i> | fx-move ... <from> <to>
             fx-set strip|bus|out <n> <i> <param> <value> | fx-on strip|bus|out <n> <i> on|off
             fx-all strip|bus|out <n> on|off   every effect at once, keeping each one's switch
+            preset-list | preset-save|preset-load strip|bus|out <n> <name> | preset-delete <name>
+            fx-preset-save|fx-preset-load strip|bus|out <n> <i> <name> | fx-preset-delete <type> <name>
             default output|input <virtual slot> | default-device output|input <device name>
             strip-remove <n> | bus-remove <n> | out-remove <n>
             virtual-list | virtual-add <slot> out|in <name> | virtual-rename <slot> <name> | virtual-remove <slot>
@@ -831,6 +903,9 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             row.buffer = prepared[d.id] != nil ? bufferFrames(d.id) : 0
             return row
         }
+        snap.chainPresets = presets.chainNames
+        snap.builtInChains = BuiltInChains.names
+        snap.effectPresets = presets.effectNames
         snap.engineRate = engineRate
         snap.engineBlock = engineBlock
         snap.virtuals = driverList().split(separator: "\n").compactMap { line in

@@ -62,6 +62,10 @@ public struct Snapshot: Codable, Sendable, Equatable {
     /// for a moment while it restarts.
     public var engineRate: Double = 0
     public var engineBlock = 0
+    /// Preset names: the user's chains, the built-in ones, and single effects by type.
+    public var chainPresets: [String] = []
+    public var builtInChains: [String] = []
+    public var effectPresets: [String: [String]] = [:]
 
     public init() {}
 }
