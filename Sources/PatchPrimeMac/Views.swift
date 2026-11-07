@@ -202,13 +202,17 @@ struct MixerView: View {
         VStack(spacing: 0) {
         CueBar()
         let nothingYet = s.strips.isEmpty && s.outputs.isEmpty && s.buses.isEmpty
-        if StartHereView.shows(s, hidden: startHereHidden) {
+        // Nothing is decided about Start here until the engine's state has been read.
+        if model.loaded, StartHereView.shows(s, hidden: startHereHidden) {
             // Alone while there's nothing to show below it; then above the strips.
             ScrollView(.vertical) { StartHereView(showRouting: showRouting) }
                 .frame(maxHeight: nothingYet ? .infinity : 340)
                 .onAppear { if nothingYet { startHereHidden = false } }
         }
-        if !nothingYet {
+        if !model.loaded {
+            Text(model.reachable ? "Reading the mix…" : "The engine isn't running.")
+                .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if !nothingYet {
         ScrollView(.horizontal) {
             HStack(alignment: .top, spacing: 18) {
                 section("INPUTS", .green) {

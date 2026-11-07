@@ -35,6 +35,9 @@ private struct WeakMeter {
 final class Model: ObservableObject {
     @Published var snapshot = Snapshot()
     @Published var reachable = true
+    /// The engine's state has arrived. Until then the settings are empty only because
+    /// they haven't been read, not because nothing is set up.
+    @Published var loaded = false
     @Published var lastError: String?
     let levels = Levels()
     /// The built-in effects, from the same code the engine runs.
@@ -55,6 +58,7 @@ final class Model: ObservableObject {
         offlineSample = sample != nil
         if let sample {
             snapshot = sample
+            loaded = true
             held = ["s0": 0.3, "s1": 0.08, "b0": 0.25, "b1": 0.06, "o0": 0.25, "o1": 0.9]
             for (key, value) in held { levels.set(key, value) }
         }
@@ -115,6 +119,7 @@ final class Model: ObservableObject {
         // A restarted helper has made a new meters block: drop the old one and open it again.
         if snap.engineStarted != snapshot.engineStarted { meters = nil }
         if snap != snapshot { snapshot = snap }
+        if !loaded { loaded = true }
     }
 
     private var levelPending: [String: [String]] = [:]
