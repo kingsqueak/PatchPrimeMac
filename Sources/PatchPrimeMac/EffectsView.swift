@@ -236,6 +236,13 @@ struct EffectCard: View {
             if info == nil && !effect.isPlugin {
                 Text("This effect isn't known to this version, so it's skipped.").font(.caption).foregroundStyle(.orange)
             }
+            if effect.isPlugin {
+                HStack {
+                    Button("Open Window") { model.send(words("fx-window", "\(index)", "open")) }
+                    Text("The plugin's own controls. Changes are saved with this chain, its presets and scenes.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             if effect.type == "ducker" {
                 let strips = model.snapshot.settings.strips.filter { !(stage == .input && $0.slot == slot) }
                 HStack(spacing: 8) {

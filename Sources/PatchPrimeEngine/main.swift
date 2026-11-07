@@ -7,6 +7,7 @@
 //
 // Everything here runs on the main queue. The realtime code is all in PPCore.
 
+import AppKit
 import AVFoundation
 import CoreAudio
 import Foundation
@@ -70,6 +71,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     func start() {
         scanner.changed = {} // the GUI polls the snapshot
         plugins.mixerNow = { [weak self] in self?.core.flatMap { pp_engine_mixer($0) } }
+        plugins.stateChanged = { [weak self] key, state in self?.saveState(key, state) }
         plugins.goneNow = { [weak self] in
             guard let self, let core = self.core, let mixer = pp_engine_mixer(core) else { return }
             if self.plugins.reapDead(mixer) { self.apply() }
@@ -306,6 +308,32 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         applyCue(mixer)
 
         pp_engine_enable_hardware_output(core, settings.hardwareOutputEnabled ? 1 : 0, settings.hardwareLimit)
+    }
+
+    /// Where a plugin key points: "s0#2#au:...#1" is strip 0, effect 2.
+    func place(_ key: String) -> (verb: String, slot: Int, index: Int, type: String)? {
+        let parts = key.split(separator: "#").map(String.init)
+        guard parts.count >= 3, let first = parts[0].first, let slot = Int(parts[0].dropFirst()), let index = Int(parts[1]),
+              let verb = ["s": "strip", "b": "bus", "o": "out"][String(first)] else { return nil }
+        return (verb, slot, index, parts[2])
+    }
+
+    /// A plugin's own state, saved into its chain (it's what the plugin's window changed).
+    func saveState(_ key: String, _ state: String) {
+        guard let p = place(key) else { return }
+        var next = settings
+        _ = editChain(&next, p.verb, p.slot) { chain in
+            guard chain.indices.contains(p.index), chain[p.index].type == p.type else { return "moved" }
+            chain[p.index].state = state
+            return nil
+        }
+        if next != settings { _ = commit(next, "saved", later: true) }
+    }
+
+    /// Every loaded plugin's state into the settings now, before they're saved somewhere.
+    func captureStates() {
+        for (key, state) in plugins.allStates() { saveState(key, state) }
+        pendingSave?.perform()
     }
 
     /// Plugins that aren't running, and why: read fresh each time.
@@ -572,6 +600,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     }
 
     func shutDown() {
+        captureStates()
         pendingSave?.perform()
         if let core { pp_engine_destroy(core) }
         core = nil
@@ -996,6 +1025,32 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         case "plugins-scan-stop":
             scanner.stop()
             return Reply(ok: true, text: "stopped")
+        case "fx-window" where args.count == 4:
+            // fx-window strip|bus|out <n> <i> open|close: the plugin's own window.
+            let a = Array(args)
+            guard let slot = Int(a[1]), let index = Int(a[2]), let prefix = ["strip": "s", "bus": "b", "out": "o"][a[0]] else { break }
+            guard let key = plugins.loadedKeys.first(where: { place($0).map { $0.verb == a[0] && $0.slot == slot && $0.index == index } ?? false })
+                ?? plugins.openWindows.first(where: { $0.hasPrefix("\(prefix)\(slot)#\(index)#") }) else {
+                return Reply(ok: false, text: "no plugin loaded there (yet)")
+            }
+            if a[3] == "close" {
+                plugins.closeWindow(key)
+                return Reply(ok: true, text: "closed")
+            }
+            var label = ""
+            switch a[0] {
+            case "strip": label = next.strips.first { $0.slot == slot }?.label ?? ""
+            case "bus": label = next.buses.first { $0.slot == slot }?.label ?? ""
+            default: label = next.outputs.first { $0.slot == slot }?.label ?? ""
+            }
+            var chain: [EffectSetting] = []
+            var copy = next
+            _ = editChain(&copy, a[0], slot) { chain = $0; return nil }
+            let name = chain.indices.contains(index) ? chain[index].plugin ?? "Plugin" : "Plugin"
+            plugins.openWindow(key, title: "\(label): \(name)") { problem in
+                if let problem { self.note = problem }
+            }
+            return Reply(ok: true, text: "opening")
         case "plugins-timing":
             return Reply(ok: true, text: (plugins.lastDead + plugins.timings).joined(separator: "\n"))
         case "plugins-host":
@@ -1066,6 +1121,8 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             let names = scenes.names()
             return Reply(ok: true, text: names.isEmpty ? "no scenes" : names.map { $0 == settings.lastScene ? "\($0) (last loaded)" : $0 }.joined(separator: "\n"))
         case "scene-save" where args.count >= 1:
+            captureStates()
+            next = settings
             let name = PresetStore.clean(args.joined(separator: " "))
             func uid(_ kind: DefaultKind) -> String {
                 let id = defaultDevice(kind)
@@ -1118,6 +1175,8 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             guard let slot = Int(a[1]) else { break }
             let name = a[2...].joined(separator: " ")
             if verb == "preset-save" {
+                captureStates()
+                next = settings
                 var current: [EffectSetting] = []
                 var copy = next
                 if let problem = editChain(&copy, a[0], slot, { current = $0; return nil }) {
@@ -1154,6 +1213,8 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             guard let slot = Int(a[1]), let index = Int(a[2]) else { break }
             let name = a[3...].joined(separator: " ")
             if verb == "fx-preset-save" {
+                captureStates()
+                next = settings
                 var effect: EffectSetting?
                 var copy = next
                 if let problem = editChain(&copy, a[0], slot, { chain in
@@ -1229,6 +1290,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             plugin-filter kind|maker|category|plugin <name> hide|show
             fx-preset-save|fx-preset-load strip|bus|out <n> <i> <name> | fx-preset-delete <type> <name>
             fx-add-plugin strip|bus|out <n> <plugin id> [position]   an AU, the version that fits
+            fx-window strip|bus|out <n> <i> open|close   the plugin's own window
             default output|input <virtual slot> | default-device output|input <device name>
             strip-remove <n> | bus-remove <n> | out-remove <n>
             virtual-list | virtual-add <slot> out|in <name> | virtual-rename <slot> <name> | virtual-remove <slot>
@@ -1346,12 +1408,15 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     }
 }
 
+// An accessory app: no Dock icon or menu bar, but able to show plugins' own windows.
+let app = NSApplication.shared
+app.setActivationPolicy(.accessory)
 let engine = Engine()
 let listener = NSXPCListener(machServiceName: engineMachService)
 listener.delegate = engine
 listener.resume()
 DispatchQueue.main.async { engine.start() }
-dispatchMain()
+app.run()
 
 extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
