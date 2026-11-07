@@ -22,12 +22,47 @@ public struct Reply: Codable, Sendable {
     }
 }
 
+/// A connection kept open, for anything that talks to the engine often.
+public final class EngineLink: @unchecked Sendable {
+    private let lock = NSLock()
+    private var connection: NSXPCConnection?
+
+    public init() {}
+
+    private func current() -> NSXPCConnection {
+        lock.lock()
+        defer { lock.unlock() }
+        if let connection { return connection }
+        let made = NSXPCConnection(machServiceName: engineMachService)
+        made.remoteObjectInterface = NSXPCInterface(with: PPEngineService.self)
+        made.invalidationHandler = { [weak self] in self?.drop() }
+        made.interruptionHandler = { [weak self] in self?.drop() }
+        made.resume()
+        connection = made
+        return made
+    }
+
+    private func drop() {
+        lock.lock()
+        connection = nil
+        lock.unlock()
+    }
+
+    public func send(_ words: [String], timeout: TimeInterval = 8) -> Reply {
+        exchange(current(), words, timeout)
+    }
+}
+
 /// Sends one request. Fails after a few seconds rather than hanging.
 public func sendToEngine(_ words: [String], timeout: TimeInterval = 8) -> Reply {
     let connection = NSXPCConnection(machServiceName: engineMachService)
     connection.remoteObjectInterface = NSXPCInterface(with: PPEngineService.self)
     connection.resume()
     defer { connection.invalidate() }
+    return exchange(connection, words, timeout)
+}
+
+private func exchange(_ connection: NSXPCConnection, _ words: [String], _ timeout: TimeInterval) -> Reply {
     let done = DispatchSemaphore(value: 0)
     let box = ReplyBox()
     let proxy = connection.remoteObjectProxyWithErrorHandler { error in

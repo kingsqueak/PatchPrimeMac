@@ -24,6 +24,11 @@ let package = Package(
             path: "Sources/PatchPrimeEngine",
             swiftSettings: [.swiftLanguageMode(.v5)]),
         .executableTarget(
+            name: "PatchPrimeMac",
+            dependencies: ["PPShared"],
+            path: "Sources/PatchPrimeMac",
+            swiftSettings: [.swiftLanguageMode(.v5)]),
+        .executableTarget(
             name: "patchprime-ctl",
             dependencies: ["PPShared"],
             path: "Sources/patchprime-ctl",

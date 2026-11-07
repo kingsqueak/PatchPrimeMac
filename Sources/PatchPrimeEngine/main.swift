@@ -24,6 +24,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     var boundOutputs: [Int: String] = [:]
     var offline: Set<String> = []
     let rateTimer = DispatchSource.makeTimerSource(queue: .main)
+    var pendingSave: DispatchWorkItem?
 
     func start() {
         let loaded = store.load()
@@ -188,18 +189,31 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
 
     // MARK: Commands
 
-    func commit(_ candidate: Settings, _ done: String) -> Reply {
+    func commit(_ candidate: Settings, _ done: String, later: Bool = false) -> Reply {
         let problems = candidate.problems()
         guard problems.isEmpty else {
             return Reply(ok: false, text: problems.joined(separator: "\n"))
         }
         settings = candidate
+        apply()
+        pendingSave?.cancel()
+        pendingSave = nil
+        if later {
+            // A fader sends many changes. Save once it stops, or it would use up
+            // the backups in a second.
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                try? self.store.save(self.settings)
+            }
+            pendingSave = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
+            return Reply(ok: true, text: done)
+        }
         do {
             try store.save(settings)
         } catch {
             return Reply(ok: false, text: "couldn't save settings: \(error.localizedDescription)")
         }
-        apply()
         return Reply(ok: true, text: done)
     }
 
@@ -228,6 +242,26 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         switch verb {
         case "status":
             return Reply(ok: true, text: statusText())
+        case "snapshot":
+            let data = (try? JSONEncoder().encode(snapshot())) ?? Data()
+            return Reply(ok: true, text: String(data: data, encoding: .utf8) ?? "{}")
+        case "label" where args.count == 3:
+            let a = Array(args)
+            guard let slot = Int(a[1]) else { break }
+            switch a[0] {
+            case "strip":
+                guard let i = next.strips.firstIndex(where: { $0.slot == slot }) else { break }
+                next.strips[i].label = a[2]
+            case "bus":
+                guard let i = next.buses.firstIndex(where: { $0.slot == slot }) else { break }
+                next.buses[i].label = a[2]
+            case "out":
+                guard let i = next.outputs.firstIndex(where: { $0.slot == slot }) else { break }
+                next.outputs[i].label = a[2]
+            default:
+                break
+            }
+            return commit(next, "done")
         case "state":
             let data = (try? JSONEncoder().encode(settings)) ?? Data()
             return Reply(ok: true, text: String(data: data, encoding: .utf8) ?? "{}")
@@ -309,7 +343,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             default:
                 break
             }
-            return commit(next, "done")
+            return commit(next, "done", later: verb == "gain")
         case "hardware" where args.count == 1:
             next.hardwareOutputEnabled = args.first == "on"
             return commit(next, "hardware output \(next.hardwareOutputEnabled ? "ON" : "off")")
@@ -335,6 +369,42 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             break
         }
         return Reply(ok: false, text: "don't understand that. Try: help")
+    }
+
+    func snapshot() -> Snapshot {
+        var snap = Snapshot()
+        snap.running = core != nil
+        snap.note = note
+        snap.settings = settings
+        snap.offline = Array(offline)
+        snap.devices = devices.filter { !$0.signature.uid.hasPrefix("PatchPrimeMac.") }.map {
+            DeviceRow(uid: $0.signature.uid, name: $0.signature.name, transport: $0.signature.transport,
+                inputs: $0.inputs, outputs: $0.outputs)
+        }
+        snap.virtuals = driverList().split(separator: "\n").compactMap { line in
+            let parts = line.split(separator: "\t", maxSplits: 2).map(String.init)
+            guard parts.count == 3, let slot = Int(parts[0]) else { return nil }
+            return VirtualRow(slot: slot, isOutput: parts[1] == "out", name: parts[2])
+        }
+        if let core, let mixer = pp_engine_mixer(core) {
+            for s in settings.strips {
+                let m = pp_mixer_read_input_meter(mixer, Int32(s.slot))
+                snap.stripPeaks[s.slot] = max(m.peakLeft, m.peakRight)
+            }
+            for b in settings.buses {
+                let m = pp_mixer_read_bus_meter(mixer, Int32(b.slot))
+                snap.busPeaks[b.slot] = max(m.peakLeft, m.peakRight)
+            }
+            for o in settings.outputs {
+                let m = pp_mixer_read_output_meter(mixer, Int32(o.slot))
+                snap.outputPeaks[o.slot] = max(m.peakLeft, m.peakRight)
+            }
+            let stats = pp_engine_stats(core)
+            snap.underruns = stats.underruns
+            snap.overruns = stats.overruns
+            snap.relocks = stats.resyncs
+        }
+        return snap
     }
 
     func statusText() -> String {
