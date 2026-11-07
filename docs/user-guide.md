@@ -330,7 +330,7 @@ Some devices show up in macOS twice under one name: an input half and an output 
 
 <!-- keywords: uninstall, remove, delete, clean -->
 
-Run **Uninstall PatchPrimeMac** from the DMG (or the uninstaller in the app's Help menu). It asks for your password, then removes everything PatchPrimeMac added: the app, the engine, the driver, its settings in macOS's audio system, its logs, and its permissions. The default output and input go back to the devices they were before. You choose whether to keep your settings, presets and scenes.
+Run **Uninstall PatchPrimeMac** from the DMG (or the uninstaller in the app's Help menu). It asks for your password, then removes everything PatchPrimeMac added: the app, the engine, the driver, its settings in macOS's audio system, its logs, caches and crash reports, and its permissions. The default output and input go back to the devices they were before. You choose whether to keep your settings, presets and scenes.
 
 **All sound on the Mac stops for a moment** while macOS's audio system restarts without the driver.
 

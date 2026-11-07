@@ -40,7 +40,7 @@ A Mac with Apple Silicon, macOS 26 or later.
 
 ## Uninstalling
 
-Open **Uninstall PatchPrimeMac** from the DMG, or **Help → Uninstall PatchPrimeMac…** in the app. It removes everything PatchPrimeMac added (the app, the engine, the driver, its entries in macOS's audio settings, logs and permissions) and puts your default sound devices back. You choose whether to keep your settings, presets and scenes.
+Open **Uninstall PatchPrimeMac** from the DMG, or **Help → Uninstall PatchPrimeMac…** in the app. It removes everything PatchPrimeMac added (the app, the engine, the driver, its entries in macOS's audio settings, logs, caches, crash reports and permissions) and puts your default sound devices back. You choose whether to keep your settings, presets and scenes.
 
 ## Building from source
 

@@ -3,8 +3,9 @@
 # SPDX-FileCopyrightText: 2026 KC2RGW Chris
 #
 # Removes PatchPrimeMac from this Mac: the app, the engine, the driver, macOS's audio
-# settings for its devices, its permissions, logs and caches, and the installer's
-# receipt; and, if asked, the user's settings, presets and scenes. Run as root:
+# settings for its devices, its permissions, logs, caches and crash reports, and the
+# installer's receipt; and, if asked, the user's settings, presets and scenes. Run as
+# root:
 #
 #   sudo uninstall.sh [--delete-settings]
 #   uninstall.sh --user NAME [--delete-settings]      (root already, from the Uninstall app)
@@ -60,12 +61,28 @@ echo "3. Removing its permissions (before the app goes: tccutil needs it)"
 as_user tccutil reset All "$label" >/dev/null 2>&1 || true
 as_user tccutil reset All "$app_id" >/dev/null 2>&1 || true
 
-echo "4. Removing the app, the engine, logs, caches and preferences"
+echo "4. Removing the app, the engine, logs, caches, crash reports and preferences"
 rm -f "$home/Library/LaunchAgents/$label.plist"
 rm -rf /Applications/PatchPrimeMac.app "$home/Applications/PatchPrimeMac.app" "$home/Applications/PatchPrimeMac"
 rm -rf "$home/Library/Logs/PatchPrimeMac" \
     "$home/Library/Caches/$app_id" "$home/Library/HTTPStorages/$app_id" \
     "$home/Library/Saved Application State/$app_id.savedState"
+# The per-user cache folder (/var/folders/…/C) is different for each user, so ask as
+# the user, not root. The Uninstall app's own folder (…uninstall) is made again while
+# it runs; the app removes that one itself after it quits.
+ucache="$(as_user getconf DARWIN_USER_CACHE_DIR 2>/dev/null)"
+ucache="${ucache%/}"
+case "$ucache" in
+    /private/var/folders/*|/var/folders/*)
+        rm -rf "${ucache:?}/$app_id" "${ucache:?}/$label" "${ucache:?}/$app_id.uninstall" ;;
+    *) ucache=""
+       problems+=("couldn't find $user's cache folder (/var/folders/…/C), so com.kingsqueak.patchprimemac* there may be left") ;;
+esac
+# Crash reports, if the app or the engine ever crashed.
+find "$home/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports -maxdepth 2 \
+    -iname 'patchprime*' -delete 2>/dev/null
+find "$home/Library/Application Support/CrashReporter" -maxdepth 1 -iname 'patchprime*' \
+    -exec rm -rf {} + 2>/dev/null
 # cfprefsd caches preferences, so delete through it rather than just the file.
 as_user defaults delete "$app_id" >/dev/null 2>&1 || true
 as_user defaults delete "$label" >/dev/null 2>&1 || true
@@ -125,8 +142,9 @@ sleep 2
 killall -9 AirPlayXPCHelper 2>/dev/null
 
 echo
-left=$( (grep -l -a -i patchprimemac "$prefs"/*.plist 2>/dev/null; ls "$hal" | grep -i patchprime; \
-    ls -d /Applications/PatchPrimeMac.app "$home/Library/LaunchAgents/$label.plist" 2>/dev/null) || true)
+left=$( (grep -l -a -i patchprimemac "$prefs"/*.plist 2>/dev/null; find "$hal" -maxdepth 1 -iname '*patchprime*'; \
+    ls -d /Applications/PatchPrimeMac.app "$home/Library/LaunchAgents/$label.plist" \
+        ${ucache:+"$ucache/$app_id" "$ucache/$label"} 2>/dev/null) || true)
 if [ -n "$left" ]; then
     echo "Still there:"; echo "$left"
 else

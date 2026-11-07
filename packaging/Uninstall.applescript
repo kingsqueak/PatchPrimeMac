@@ -4,6 +4,19 @@
 -- Uninstall PatchPrimeMac: asks, then runs uninstall.sh (in this app's Resources) as
 -- an administrator. Built into "Uninstall PatchPrimeMac.app" by make-release.sh.
 
+-- macOS makes this app a cache folder (com.kingsqueak.patchprimemac.uninstall in the
+-- user's /var/folders/…/C) while it runs, so it can't be removed from inside. Start a
+-- small background job that waits for this app to quit, however it ends, then removes
+-- that folder and anything else macOS kept for it.
+do shell script "c=$(getconf DARWIN_USER_CACHE_DIR); c=${c%/}; app=$PPID; " & ¬
+	"(while kill -0 $app 2>/dev/null; do sleep 0.5; done; sleep 1; " & ¬
+	"rm -rf \"$c/com.kingsqueak.patchprimemac.uninstall\" " & ¬
+	"\"$HOME/Library/Caches/com.kingsqueak.patchprimemac.uninstall\" " & ¬
+	"\"$HOME/Library/Saved Application State/com.kingsqueak.patchprimemac.uninstall.savedState\"; " & ¬
+	"defaults delete com.kingsqueak.patchprimemac.uninstall; " & ¬
+	"rm -f \"$HOME/Library/Preferences/com.kingsqueak.patchprimemac.uninstall.plist\"" & ¬
+	") </dev/null >/dev/null 2>&1 &"
+
 set here to POSIX path of (path to me)
 set uninstaller to here & "Contents/Resources/uninstall.sh"
 set question to "Remove PatchPrimeMac from this Mac?" & return & return & ¬

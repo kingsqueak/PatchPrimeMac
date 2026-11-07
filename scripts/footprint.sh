@@ -1,8 +1,9 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 KC2RGW Chris
-# Lists everything PatchPrimeMac has left on this Mac: files, launchd jobs, processes,
-# background item records, permissions, shared memory and macOS audio settings.
+# Lists everything PatchPrimeMac has left on this Mac: files (caches and crash reports
+# too), launchd jobs, processes, background item records, permissions, shared memory
+# and macOS audio settings.
 # Read-only. Run as yourself (sudo is fine too; it then checks the invoking user).
 # Exit status 0 means nothing found.
 #
@@ -15,6 +16,13 @@ user="${PP_USER:-}"
 [ -z "$user" ] && user="$(id -un)"
 home="$(dscl . -read "/Users/$user" NFSHomeDirectory | awk '{print $2}')"
 uid="$(id -u "$user")"
+# The per-user cache folder (/var/folders/…/C) differs for each user: ask as that user.
+if [ "$(id -un)" = "$user" ]; then
+    ucache="$(getconf DARWIN_USER_CACHE_DIR)"
+else
+    ucache="$(sudo -u "$user" getconf DARWIN_USER_CACHE_DIR 2>/dev/null)"
+fi
+ucache="${ucache%/}"
 found=0
 hit() { echo "  $*"; found=1; }
 section() { echo "$1"; }
@@ -36,13 +44,20 @@ for p in \
     "$home/Library/Preferences/com.kingsqueak.patchprimemac.engine.plist"; do
     [ -e "$p" ] && { hit "$p"; listed="$listed  $p"$'\n'; }
 done
-# Anything else with our name in the usual places.
+[ -z "$ucache" ] && echo "  (couldn't find $user's cache folder, /var/folders/…/C; not checked)"
+# Anything else with our name in the usual places, the per-user cache folder and
+# crash reports.
 others=$(for dir in /Library/LaunchAgents /Library/LaunchDaemons "/Library/Application Support" \
     /Library/Preferences "$home/Library/LaunchAgents" "$home/Library/Preferences" \
     "$home/Library/Caches" "$home/Library/Containers" "$home/Library/Group Containers" \
     "$home/Library/Application Scripts" "$home/Library/Saved Application State" \
-    "$home/Library/HTTPStorages" "$home/Library/WebKit" /private/var/db/receipts; do
+    "$home/Library/HTTPStorages" "$home/Library/WebKit" /private/var/db/receipts \
+    ${ucache:+"$ucache"} "$home/Library/Application Support/CrashReporter"; do
     [ -d "$dir" ] && find "$dir" -maxdepth 1 -iname '*patchprime*' 2>/dev/null
+done
+# Crash reports (.ips), including the ones macOS has moved to Retired.
+for dir in "$home/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
+    [ -d "$dir" ] && find "$dir" -maxdepth 2 -iname 'patchprime*' 2>/dev/null
 done | sort -u)
 while IFS= read -r p; do
     [ -n "$p" ] && ! grep -qxF "  $p" <<<"$listed" && hit "$p"
@@ -54,6 +69,7 @@ for f in /Library/Preferences/Audio/*.plist; do
 done
 
 section "Processes"
+# shellcheck disable=SC2009 # pgrep can't drop our own scripts' lines like this
 ps -axo pid=,command= | grep -i patchprime | grep -v -e scripts/footprint -e scripts/uninstall -e scripts/soak -e grep | sed "s/^ */  /" | cut -c1-140 | grep . && found=1
 
 section "launchd jobs (gui/$uid)"
