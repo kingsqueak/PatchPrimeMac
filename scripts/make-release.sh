@@ -4,16 +4,18 @@
 # Builds a release: PatchPrimeMac-<version>.pkg and PatchPrimeMac-<version>.dmg (the
 # installer, the Uninstall app and a Read Me) in build/release. Apple Silicon only.
 #
-# Everything but the driver is signed with the PatchPrimeMac certificate, so macOS keeps
-# the microphone permission across updates. Locally it's in ~/.patchprimemac-signing;
-# in CI, set PPMAC_KEYCHAIN (and its password in PPMAC_KEYCHAIN_PASSWORD) to a keychain
-# holding it. PPMAC_SIGN=- signs ad-hoc instead (a test build only).
+# Releases are signed ad-hoc: no signing key exists anywhere, and anyone can rebuild
+# the same thing. macOS ties the microphone permission to the signature, which an
+# ad-hoc one changes with every build, so after an update it asks again (once).
+# PPMAC_SIGN=<certificate> signs with a certificate instead, from PPMAC_KEYCHAIN
+# (default ~/.patchprimemac-signing/signing.keychain-db; PPMAC_KEYCHAIN_PASSWORD, or
+# keychain-password.txt there, unlocks it).
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 version="$(cat packaging/VERSION)"
 out="$root/build/release"
-identity="${PPMAC_SIGN:-D35C3005AA8B0CDE7B142F1DA38F88B26000C97B}"
+identity="${PPMAC_SIGN:--}"
 keychain="${PPMAC_KEYCHAIN:-$HOME/.patchprimemac-signing/signing.keychain-db}"
 sign() {
     if [ "$identity" = "-" ]; then

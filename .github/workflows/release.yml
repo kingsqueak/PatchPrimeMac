@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 KC2RGW Chris
+#
+# Builds the release DMG (and the .pkg inside it) on a v* tag, or by hand. Signed
+# ad-hoc: no signing key is kept anywhere, so there's none to leak.
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dmg:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install the build tools
+        run: |
+          brew list cmake >/dev/null 2>&1 || brew install cmake
+          brew list ninja >/dev/null 2>&1 || brew install ninja
+
+      - name: Build, test and package
+        run: scripts/make-release.sh
+
+      - name: Check the packages
+        run: |
+          version="$(cat packaging/VERSION)"
+          shasum -a 256 build/release/PatchPrimeMac-"$version".dmg build/release/PatchPrimeMac-"$version".pkg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: patchprimemac-dmg
+          path: build/release/PatchPrimeMac-*.dmg
+          if-no-files-found: error

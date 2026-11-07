@@ -28,6 +28,8 @@ PatchPrimeMac is free and open source (GPL-3.0-or-later). It needs a Mac with Ap
 4. **At the end of the install, all sound on the Mac stops for a moment** while macOS's audio system restarts with the driver. Turn your speakers or amplifier down first if they're loud.
 5. The engine starts. The first time an input from a microphone is used, macOS asks to let **PatchPrimeMac** use the microphone: allow it, or the mics stay silent.
 
+**Updating:** install the new version the same way, over the old one. Your settings are kept, and the app opens again if it was open. macOS asks for microphone access again after each update, because each version carries its own signature rather than one from Apple: click **Allow** again.
+
 ### First setup
 
 <!-- keywords: first time, start here, hardware output, safety, setup, add input, add output, patch desktop, patch mic, default output -->
@@ -337,7 +339,7 @@ Run **Uninstall PatchPrimeMac** from the DMG (or the uninstaller in the app's He
 <!-- keywords: problem, no sound, silent, not working, help, fix -->
 
 - **No sound at all:** is the engine running (top bar, or the menu bar icon)? Is **Hardware Output** on? Is the strip routed to an output (its Route button), and that output not muted? If the Mac's default output is a virtual device and the engine isn't running, nothing plays: pick your speakers in **System Settings → Sound** to get sound back, then restart PatchPrimeMac.
-- **A microphone shows NO SIGNAL:** check the channel has the mic on it, and that PatchPrimeMac is allowed in **System Settings → Privacy & Security → Microphone**.
+- **A microphone shows NO SIGNAL:** check the channel has the mic on it, and that PatchPrimeMac is allowed in **System Settings → Privacy & Security → Microphone** (after an update, macOS asks again; if you missed the prompt, turn PatchPrimeMac on there).
 - **A strip shows OFFLINE:** its device isn't there. Plug it in or switch it on; it comes back by itself.
 - **Clicks or dropouts:** try a bigger buffer size (Setup → Audio). `patchprime-ctl status` shows underruns, if any.
 - **A plugin shows a note:** it didn't load, or its process stopped and it's being loaded again. The note says which.

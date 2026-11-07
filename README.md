@@ -23,17 +23,20 @@ A Mac with Apple Silicon, macOS 26 or later.
 
 ## Installing
 
-Download the DMG from [Releases](https://github.com/kingsqueak/PatchPrimeMac/releases) and check its SHA-256 against the release notes. The DMG holds the installer, a Read Me and the uninstaller.
+1. Download `PatchPrimeMac-x.y.z.dmg` from [Releases](https://github.com/kingsqueak/PatchPrimeMac/releases). The release notes list its SHA-256 if you want to check it (`shasum -a 256 ~/Downloads/PatchPrimeMac-*.dmg`).
+2. PatchPrimeMac isn't signed by Apple, so macOS blocks it until you tell it to trust the download. In Terminal, run:
 
-PatchPrimeMac isn't signed with a paid Apple Developer certificate, so macOS stops the installer the first time ("Apple cannot check it"). Open **System Settings → Privacy & Security**, scroll down and click **Open Anyway** beside PatchPrimeMac. Or, before opening the DMG:
+   ```
+   xattr -dr com.apple.quarantine ~/Downloads/PatchPrimeMac-*.dmg
+   ```
 
-```
-xattr -dr com.apple.quarantine ~/Downloads/PatchPrimeMac-*.dmg
-```
+   Or skip this, and when macOS refuses to open the installer ("Apple cannot check it"), go to **System Settings → Privacy & Security**, scroll down and click **Open Anyway** beside PatchPrimeMac.
+3. Open the DMG and double-click **PatchPrimeMac-x.y.z.pkg**. The installer asks for your password, since it installs an audio driver.
+4. **Turn loud speakers or amplifiers down first:** at the end of the install, all sound on the Mac stops for a moment while macOS's audio system restarts with the driver. A few apps that are using sound (some Electron apps, such as Signal) may close; reopen them.
+5. Open **PatchPrimeMac** from Applications. The first time, a **Start here** panel sets up the usual mix: where you listen, your apps' sound, your microphones, and optionally a microphone for apps.
+6. When macOS asks to let **PatchPrimeMac** use the microphone, click **Allow**, or your mics stay silent.
 
-The installer asks for your password, since it installs an audio driver. **At the end, all sound on the Mac stops for a moment** while macOS's audio system restarts with the driver: turn loud speakers or amplifiers down first. A few apps that are using sound (some Electron apps, such as Signal) may close; reopen them.
-
-Then open PatchPrimeMac. The first time, a **Start here** panel sets up the usual mix: where you listen, your apps' sound, your microphones, and optionally a microphone for apps. When a microphone is first used, allow PatchPrimeMac to use it.
+**Updating:** install the new version the same way, over the old one. Your settings are kept, and if PatchPrimeMac was open it opens again. macOS asks for microphone access again after each update (each version carries its own signature rather than one from Apple, so macOS sees it as a new app): click **Allow** once more.
 
 ## Uninstalling
 
@@ -49,7 +52,7 @@ cd PatchPrimeMac
 PPMAC_SIGN=- scripts/make-release.sh
 ```
 
-That builds the driver, the engine and the app, runs the tests, and leaves an ad-hoc-signed `PatchPrimeMac-<version>.pkg` and `.dmg` in `build/release`. (Release builds are signed with the project's own certificate instead, so macOS keeps the microphone permission across updates; an ad-hoc build asks again after each one.)
+That builds the driver, the engine and the app, runs the tests, and leaves an ad-hoc-signed `PatchPrimeMac-<version>.pkg` and `.dmg` in `build/release`. Releases are built exactly this way, by GitHub Actions.
 
 How it fits together:
 

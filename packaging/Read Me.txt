@@ -18,8 +18,11 @@ Installing
 4. At the end, ALL SOUND ON THE MAC STOPS FOR A MOMENT while macOS's audio restarts
    with the driver. Turn loud speakers or amplifiers down first. A few apps that
    are using sound (some Electron apps, such as Signal) may close; reopen them.
-5. Open PatchPrimeMac from Applications. The first time a microphone is used, allow
-   PatchPrimeMac to use it.
+5. Open PatchPrimeMac from Applications. When macOS asks to let PatchPrimeMac use
+   the microphone, click Allow, or your mics stay silent.
+
+Updating: install the new version the same way, over the old one. Your settings are
+kept. macOS asks for microphone access again after each update: click Allow again.
 
 The user guide is in the app: Help > PatchPrimeMac Help.
 
