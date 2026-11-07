@@ -837,8 +837,10 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             return Reply(ok: ok, text: ok ? "done" : "macOS refused that")
         case "default-device" where args.count == 2:
             let a = Array(args)
-            guard let device = devices.first(where: { $0.signature.name == a[1] }) else {
-                return Reply(ok: false, text: "no device called \"\(a[1])\"")
+            // The half that fits: a device can show up as an input half and an output half.
+            guard let device = devices.first(where: { $0.signature.name == a[1] && !$0.signature.uid.hasPrefix("PatchPrimeMac.")
+                && (a[0] == "input" ? $0.inputs > 0 : $0.outputs > 0) }) else {
+                return Reply(ok: false, text: "no \(a[0]) device called \"\(a[1])\"")
             }
             if a[0] == "input" {
                 return Reply(ok: setDefaultDevice(.input, device.id), text: "done")

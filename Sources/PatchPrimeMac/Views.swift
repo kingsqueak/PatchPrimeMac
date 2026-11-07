@@ -44,8 +44,42 @@ struct StripView: View {
     var silent = false
     var effects = 0
     var effectsOn = true
+    /// Where its sound comes from (a strip) or goes (an output), for the default star.
+    var endpoint: Endpoint? = nil
 
     var cueKey: String { "\(stage.meterPrefix)\(slot)" }
+
+    func starHelp(_ role: (output: Bool, device: String, command: [String]), _ isDefault: Bool) -> String {
+        let which = role.output ? "output" : "input"
+        var text = isDefault ? "\(role.device) is the system's default \(which)." : "Make \(role.device) the system's default \(which)."
+        if case .device = endpoint {
+            // A hardware strip is one or two channels of a device; the default is the whole device.
+            text += " That's the whole device: macOS can't make a single channel the default."
+            if !role.output {
+                text += " For apps to record one processed mic, route it to a virtual input such as Stream Mic and star that."
+            }
+        }
+        return text
+    }
+
+    /// The system default this strip's device can be: a strip apps play into is an output
+    /// for them; an output apps record from is an input; hardware is what it is.
+    /// (which default, its device's name, the command that makes it the default)
+    var defaultRole: (output: Bool, device: String, command: [String])? {
+        guard let endpoint else { return nil }
+        switch (stage, endpoint) {
+        case let (.input, .virtual(s)):
+            return (true, model.snapshot.virtuals.first { $0.slot == s }?.name ?? "", ["default", "output", "\(s)"])
+        case let (.output, .virtual(s)):
+            return (false, model.snapshot.virtuals.first { $0.slot == s }?.name ?? "", ["default", "input", "\(s)"])
+        case let (.input, .device(sig, _, _)):
+            return (false, sig.name, ["default-device", "input", sig.name])
+        case let (.output, .device(sig, _, _)):
+            return (true, sig.name, ["default-device", "output", sig.name])
+        default:
+            return nil
+        }
+    }
     @State private var renaming = false
     @State private var newName = ""
 
@@ -65,6 +99,7 @@ struct StripView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 3)
                 .background(stage.color.opacity(0.28), in: RoundedRectangle(cornerRadius: 4))
+            EffectsButton(stage: stage, slot: slot, label: label, count: effects, on: effectsOn)
             Text(offline ? "OFFLINE" : silent ? "NO SIGNAL" : detail)
                 .font(.system(size: 9, weight: offline || silent ? .bold : .regular))
                 .foregroundStyle(offline ? Color.red : silent ? Color.orange : Color.secondary)
@@ -101,8 +136,27 @@ struct StripView: View {
                         .help("Cue: hear this alone on the cue output, \(model.snapshot.settings.cuePreFader ? "before" : "after") its fader")
                     }
                 }
+                if let role = defaultRole {
+                    let current = role.output ? model.snapshot.defaultOutput : model.snapshot.defaultInput
+                    let isDefault = !role.device.isEmpty && current == role.device
+                    Button {
+                        if !isDefault { model.send(role.command) }
+                    } label: {
+                        Image(systemName: isDefault ? "star.fill" : "star")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(isDefault ? Color.green : Color.secondary)
+                            .frame(maxWidth: .infinity, minHeight: 20)
+                            .background(Color.primary.opacity(isDefault ? 0.12 : 0.08), in: RoundedRectangle(cornerRadius: 4))
+                    }
+                    .buttonStyle(.plain)
+                    .help(starHelp(role, isDefault))
+                }
             }
-            EffectsButton(stage: stage, slot: slot, label: label, count: effects, on: effectsOn)
+            if stage != .output {
+                RouteButton(stage: stage, slot: slot, label: label)
+            } else {
+                Color.clear.frame(height: 20) // outputs route nowhere; keep the strips lined up
+            }
         }
         .padding(8)
         .frame(width: 92)
@@ -151,7 +205,8 @@ struct MixerView: View {
                     ForEach(s.strips, id: \.slot) { strip in
                         StripView(stage: .input, slot: strip.slot, label: strip.label, detail: detail(strip.source),
                             gain: strip.gain, muted: strip.muted, offline: model.snapshot.offline.contains(strip.label),
-                            silent: model.snapshot.silent.contains(strip.label), effects: strip.effects.count, effectsOn: strip.effectsOn)
+                            silent: model.snapshot.silent.contains(strip.label), effects: strip.effects.count, effectsOn: strip.effectsOn,
+                            endpoint: strip.source)
                     }
                 }
                 section("MIX BUSES", .blue) {
@@ -164,7 +219,7 @@ struct MixerView: View {
                     ForEach(s.outputs, id: \.slot) { output in
                         StripView(stage: .output, slot: output.slot, label: output.label, detail: detail(output.sink),
                             gain: output.gain, muted: output.muted, offline: model.snapshot.offline.contains(output.label),
-                            effects: output.effects.count, effectsOn: output.effectsOn)
+                            effects: output.effects.count, effectsOn: output.effectsOn, endpoint: output.sink)
                     }
                 }
             }
@@ -592,6 +647,88 @@ struct SceneMenu: View {
             }
         } message: {
             Text("The mix you have now isn't changed.")
+        }
+    }
+}
+
+/// Where a strip or bus sends its sound, as on the Routing tab: grey "Route" when it goes
+/// nowhere, else where it goes; click for a chooser with every bus and output it can feed.
+struct RouteButton: View {
+    @EnvironmentObject var model: Model
+    var stage: Stage
+    var slot: Int
+    var label: String
+    @State private var open = false
+
+    struct Target: Identifiable {
+        var id: String { "\(isBus ? "b" : "o")\(slot)" }
+        var isBus: Bool
+        var slot: Int
+        var label: String
+        var gain: Float?
+    }
+
+    var targets: [Target] {
+        let s = model.snapshot.settings
+        if stage == .input, let strip = s.strips.first(where: { $0.slot == slot }) {
+            return s.buses.map { b in Target(isBus: true, slot: b.slot, label: b.label, gain: strip.busSends.first { $0.to == b.slot }?.gain) }
+                + s.outputs.map { o in Target(isBus: false, slot: o.slot, label: o.label, gain: strip.outputSends.first { $0.to == o.slot }?.gain) }
+        }
+        if stage == .bus, let bus = s.buses.first(where: { $0.slot == slot }) {
+            return s.outputs.map { o in Target(isBus: false, slot: o.slot, label: o.label, gain: bus.outputSends.first { $0.to == o.slot }?.gain) }
+        }
+        return []
+    }
+
+    func route(_ t: Target, _ gain: Float) -> [String] {
+        [ "route", stage.verb, "\(slot)", t.isBus ? "bus" : "out", "\(t.slot)", "\(gain)"]
+    }
+
+    var body: some View {
+        let all = targets
+        let on = all.filter { $0.gain != nil }
+        Button { open = true } label: {
+            Text(on.isEmpty ? "Route" : "→ " + on.map(\.label).joined(separator: ", "))
+                .font(.system(size: 10, weight: .semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .padding(.horizontal, 3)
+                .frame(maxWidth: .infinity, minHeight: 20)
+                .foregroundStyle(on.isEmpty ? Color.secondary : Color.primary)
+                .background(on.isEmpty ? Color.primary.opacity(0.08) : stage.color.opacity(0.35), in: RoundedRectangle(cornerRadius: 4))
+        }
+        .buttonStyle(.plain)
+        .help(on.isEmpty ? "Goes nowhere yet: choose where" : "Goes to " + on.map(\.label).joined(separator: ", "))
+        .popover(isPresented: $open, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("\(label) goes to").font(.headline)
+                if all.isEmpty {
+                    Text("There's nothing to send to yet: add a bus or an output in Setup.").foregroundStyle(.secondary)
+                }
+                ForEach(all) { t in
+                    HStack {
+                        Toggle(isOn: Binding(get: { t.gain != nil }, set: { model.send(route(t, $0 ? 1 : 0)) })) {
+                            HStack(spacing: 4) {
+                                Circle().fill(t.isBus ? Color.blue : Color.orange).frame(width: 7, height: 7)
+                                Text(t.label)
+                            }
+                        }
+                        .toggleStyle(.checkbox)
+                        Spacer(minLength: 16)
+                        if let g = t.gain {
+                            Menu(Decibels.label(Decibels.fromGain(g)) + " dB") {
+                                ForEach([0, -3, -6, -12, -20], id: \.self) { (db: Int) in
+                                    Button("\(db) dB") { model.send(route(t, Decibels.toGain(Float(db)))) }
+                                }
+                            }
+                            .fixedSize()
+                        }
+                    }
+                }
+                Text("Blue: mix buses. Orange: outputs.").font(.caption).foregroundStyle(.secondary)
+            }
+            .padding(12)
+            .frame(minWidth: 240)
         }
     }
 }
