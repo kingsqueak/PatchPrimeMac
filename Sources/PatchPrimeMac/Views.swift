@@ -524,8 +524,40 @@ struct ContentView: View {
     @EnvironmentObject var model: Model
     @State private var tab = 0
     @State private var confirmHardware = false
+    @AppStorage("mini") private var mini = false
+    @State private var window: NSWindow?
+    @State private var watcher: FrameWatcher?
 
     var body: some View {
+        Group {
+            if mini {
+                MiniView { setMini(false) }
+            } else {
+                full
+            }
+        }
+        .background(WindowReader { w in
+            guard window == nil else { return }
+            window = w
+            // Back where it was left, in the mode it was left in; and kept as it's moved.
+            WindowFrames.restore(w, mini: mini)
+            // The mode as it is when saving, not as it was when this was set up.
+            watcher = FrameWatcher(w) { WindowFrames.save($0, mini: UserDefaults.standard.bool(forKey: "mini")) }
+        })
+    }
+
+    /// One strip wide, or back to the full mixer, each at its own remembered size and place.
+    func setMini(_ on: Bool) {
+        guard let w = window else { mini = on; return }
+        WindowFrames.save(w.frame, mini: mini) // where the mode being left was
+        WindowFrames.restoring = true
+        mini = on
+        // After SwiftUI has put the other view in (and its minimum size with it), or the
+        // old minimum would stretch the restored size.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { WindowFrames.restore(w, mini: on) }
+    }
+
+    var full: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
                 Picker("", selection: $tab) {
@@ -537,6 +569,8 @@ struct ContentView: View {
                 .labelsHidden()
                 .frame(width: 260)
                 SceneMenu()
+                Button { setMini(true) } label: { Image(systemName: "rectangle.compress.vertical") }
+                    .help("Mini window: every level and mute, one strip wide")
                 Spacer()
                 statusText
                 Button(model.snapshot.settings.hardwareOutputEnabled ? "Hardware Output On" : "Hardware Output Off") {
@@ -730,5 +764,158 @@ struct RouteButton: View {
             .padding(12)
             .frame(minWidth: 240)
         }
+    }
+}
+
+/// Where the full and mini windows were, kept apart, and brought back sensibly: never
+/// below a usable size, and never off the screens there are now.
+enum WindowFrames {
+    static let fullMinimum = NSSize(width: 640, height: 460)
+    static let miniMinimum = NSSize(width: 150, height: 200)
+
+    static func key(_ mini: Bool) -> String { mini ? "frame.mini" : "frame.full" }
+
+    /// While the app moves the window itself (switching modes), those moves aren't the
+    /// user's, and mustn't be saved over the other mode's place.
+    @MainActor static var restoring = false
+
+    @MainActor static func save(_ frame: NSRect, mini: Bool) {
+        guard !restoring else { return }
+        UserDefaults.standard.set(NSStringFromRect(frame), forKey: key(mini))
+    }
+
+    @MainActor static func restore(_ w: NSWindow, mini: Bool) {
+        let minimum = mini ? miniMinimum : fullMinimum
+        w.minSize = minimum
+        var frame: NSRect
+        if let text = UserDefaults.standard.string(forKey: key(mini)) {
+            frame = NSRectFromString(text)
+        } else if mini {
+            // First time small: one strip wide at the full window's right edge.
+            frame = NSRect(x: w.frame.maxX - 170, y: w.frame.maxY - 560, width: 170, height: 560)
+        } else {
+            frame = NSRect(x: w.frame.minX, y: w.frame.maxY - 620, width: 900, height: 620)
+        }
+        frame.size.width = max(frame.width, minimum.width)
+        frame.size.height = max(frame.height, minimum.height)
+        // On a screen there is now, or the main one.
+        let screens = NSScreen.screens.map(\.visibleFrame)
+        if !screens.contains(where: { $0.intersects(frame) && $0.intersection(frame).width >= 80 && $0.intersection(frame).height >= 60 }),
+           let main = NSScreen.main?.visibleFrame ?? screens.first {
+            frame.size.width = min(frame.width, main.width)
+            frame.size.height = min(frame.height, main.height)
+            frame.origin = NSPoint(x: main.midX - frame.width / 2, y: main.midY - frame.height / 2)
+        }
+        restoring = true
+        w.setFrame(frame, display: true, animate: w.isVisible)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { restoring = false } // after the animation
+    }
+}
+
+/// Saves a window's frame whenever it's moved or resized.
+final class FrameWatcher {
+    private var tokens: [NSObjectProtocol] = []
+
+    init(_ w: NSWindow, _ save: @escaping @MainActor (NSRect) -> Void) {
+        for name in [NSWindow.didMoveNotification, NSWindow.didEndLiveResizeNotification, NSWindow.willCloseNotification] {
+            tokens.append(NotificationCenter.default.addObserver(forName: name, object: w, queue: .main) { [weak w] _ in
+                MainActor.assumeIsolated { if let w { save(w.frame) } }
+            })
+        }
+    }
+
+    deinit { tokens.forEach(NotificationCenter.default.removeObserver) }
+}
+
+/// Finds the window a view is in.
+struct WindowReader: NSViewRepresentable {
+    var found: (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let v = NSView()
+        DispatchQueue.main.async { if let w = v.window { found(w) } }
+        return v
+    }
+
+    func updateNSView(_ v: NSView, context: Context) {}
+}
+
+/// The mini window: every strip, bus and output as a row with a level and a mute.
+struct MiniView: View {
+    @EnvironmentObject var model: Model
+    var expand: () -> Void
+
+    var body: some View {
+        let s = model.snapshot.settings
+        VStack(spacing: 0) {
+            HStack {
+                Text("PatchPrimeMac").font(.caption.bold()).foregroundStyle(.secondary)
+                Spacer()
+                Button(action: expand) { Image(systemName: "rectangle.expand.vertical") }
+                    .buttonStyle(.borderless)
+                    .help("Back to the full mixer")
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            Divider()
+            ScrollView {
+                VStack(spacing: 8) {
+                    ForEach(s.strips, id: \.slot) { MiniRow(stage: .input, slot: $0.slot, label: $0.label, gain: $0.gain, muted: $0.muted) }
+                    if !s.buses.isEmpty { Divider() }
+                    ForEach(s.buses, id: \.slot) { MiniRow(stage: .bus, slot: $0.slot, label: $0.label, gain: $0.gain, muted: $0.muted) }
+                    if !s.outputs.isEmpty { Divider() }
+                    ForEach(s.outputs, id: \.slot) { MiniRow(stage: .output, slot: $0.slot, label: $0.label, gain: $0.gain, muted: $0.muted) }
+                }
+                .padding(8)
+            }
+        }
+        .frame(minWidth: 150, idealWidth: 170, maxWidth: .infinity, minHeight: 200, idealHeight: 560, maxHeight: .infinity)
+    }
+}
+
+struct MiniRow: View {
+    @EnvironmentObject var model: Model
+    var stage: Stage
+    var slot: Int
+    var label: String
+    var gain: Float
+    var muted: Bool
+    @State private var moving: Float?
+
+    static func position(_ db: Float) -> Double { Double((db - Decibels.floor) / (Decibels.top - Decibels.floor)) }
+    static func db(_ p: Double) -> Float { Decibels.floor + Float(p) * (Decibels.top - Decibels.floor) }
+
+    var body: some View {
+        let db = moving ?? Decibels.fromGain(gain)
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 4) {
+                Circle().fill(stage.color).frame(width: 6, height: 6)
+                Text(label).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                Spacer(minLength: 2)
+                Text(Decibels.label(db)).font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
+            }
+            HStack(spacing: 4) {
+                ToggleButton(title: "M", on: muted, color: .muteRed, textOn: .white) {
+                    model.send("mute", stage.verb, "\(slot)", muted ? "off" : "on")
+                }
+                .frame(width: 24)
+                VStack(spacing: 2) {
+                    NativeSlider(position: Self.position(db),
+                        change: { p in
+                            let v = Self.db(p)
+                            moving = v
+                            model.sendLevel("\(stage.verb)\(slot)", ["gain", stage.verb, "\(slot)", "\(Decibels.toGain(v))"])
+                        },
+                        end: { DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { moving = nil } },
+                        reset: {
+                            moving = nil
+                            model.send("gain", stage.verb, "\(slot)", "1")
+                        })
+                    LiveMeter(levels: model.levels, key: "\(stage.meterPrefix)\(slot)", horizontal: true)
+                        .frame(height: 3)
+                }
+            }
+        }
+        .help("Double-click the slider for 0 dB; scroll to adjust")
     }
 }

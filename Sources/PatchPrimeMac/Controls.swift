@@ -27,6 +27,15 @@ final class MeterLayerView: NSView {
 
     required init?(coder: NSCoder) { nil }
 
+    /// Left to right instead of bottom to top (the mini window's).
+    var horizontal = false {
+        didSet {
+            fill.startPoint = horizontal ? CGPoint(x: 0, y: 0.5) : CGPoint(x: 0.5, y: 0)
+            fill.endPoint = horizontal ? CGPoint(x: 1, y: 0.5) : CGPoint(x: 0.5, y: 1)
+            place()
+        }
+    }
+
     var level: Float = 0 {
         didSet {
             let shown = Int(fraction(level) * 200)
@@ -57,7 +66,8 @@ final class MeterLayerView: NSView {
         fill.frame = CGRect(x: 0, y: 0, width: bounds.width, height: height)
         let mask = fill.mask ?? CALayer()
         mask.backgroundColor = NSColor.white.cgColor
-        mask.frame = CGRect(x: 0, y: 0, width: bounds.width, height: height * shown)
+        mask.frame = horizontal ? CGRect(x: 0, y: 0, width: bounds.width * shown, height: height)
+            : CGRect(x: 0, y: 0, width: bounds.width, height: height * shown)
         fill.mask = mask
         CATransaction.commit()
     }
@@ -74,9 +84,11 @@ struct Meter: NSViewRepresentable {
 struct LiveMeter: NSViewRepresentable {
     var levels: Levels
     var key: String
+    var horizontal = false
 
     func makeNSView(context: Context) -> MeterLayerView {
         let view = MeterLayerView()
+        view.horizontal = horizontal
         levels.attach(view, key: key)
         return view
     }

@@ -23,20 +23,17 @@ struct PatchPrimeMacApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("PatchPrimeMac") {
+        WindowGroup("PatchPrimeMac", id: "mixer") {
             ContentView()
                 .environmentObject(model)
                 .onAppear { model.start() }
         }
         .defaultSize(width: 860, height: 560)
+        // The window's minimum comes from what's in it (the full mixer or the mini view),
+        // and nothing more: the remembered sizes are ours to set.
+        .windowResizability(.contentMinSize)
         MenuBarExtra("PatchPrimeMac", systemImage: "slider.vertical.3") {
-            Text(model.reachable ? "Engine running" : "Engine isn't running")
-            Divider()
-            Button("Open Mixer") {
-                NSApp.activate(ignoringOtherApps: true)
-                NSApp.windows.first { $0.canBecomeMain }?.makeKeyAndOrderFront(nil)
-            }
-            Button("Quit (audio keeps running)") { NSApp.terminate(nil) }
+            MenuContent().environmentObject(model)
         }
     }
 
@@ -65,6 +62,31 @@ struct PatchPrimeMacApp: App {
         save(ContentView(), "-mixer", CGSize(width: 860, height: 560))
         save(RoutingView(), "-routing", CGSize(width: 620, height: 300))
         save(SetupView(), "-setup", CGSize(width: 620, height: 700))
+        save(MiniView {}, "-mini", CGSize(width: 170, height: 520))
         save(EffectsEditor(stage: .input, slot: 0, label: "RE20") {}, "-effects", CGSize(width: 720, height: 1400))
+    }
+}
+
+/// The menu bar item's menu.
+struct MenuContent: View {
+    @EnvironmentObject var model: Model
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Text(model.reachable ? "Engine running" : "Engine isn't running")
+        Divider()
+        Button("Open Mixer") {
+            NSApp.activate(ignoringOtherApps: true)
+            // The mixer window if it's there (even minimised); a new one if it was closed.
+            if let w = NSApp.windows.first(where: {
+                ($0.identifier?.rawValue.hasPrefix("mixer") == true || $0.title == "PatchPrimeMac") && ($0.isVisible || $0.isMiniaturized)
+            }) {
+                if w.isMiniaturized { w.deminiaturize(nil) }
+                w.makeKeyAndOrderFront(nil)
+            } else {
+                openWindow(id: "mixer")
+            }
+        }
+        Button("Quit (audio keeps running)") { NSApp.terminate(nil) }
     }
 }
