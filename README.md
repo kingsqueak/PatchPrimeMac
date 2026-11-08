@@ -38,7 +38,7 @@ A Mac with Apple Silicon, macOS 26 or later.
 5. Open **PatchPrimeMac** from Applications. The first time, a **Start here** panel sets up the usual mix: where you listen, your apps' sound, your microphones, and optionally a microphone for apps.
 6. When macOS asks to let **PatchPrimeMac** use the microphone, click **Allow**, or your mics stay silent.
 
-**Updating:** install the new version the same way, over the old one. Your settings are kept, and if PatchPrimeMac was open it opens again. macOS asks for microphone access again after each update (each version carries its own signature rather than one from Apple, so macOS sees it as a new app): click **Allow** once more.
+**Updating:** the app tells you when a new version is out (a grey note in the top bar, or Help → Check for Updates…) and links to the Releases page; it never downloads anything itself. Install the new version the same way, over the old one. Your settings are kept, and if PatchPrimeMac was open it opens again. macOS asks for microphone access again after each update (each version carries its own signature rather than one from Apple, so macOS sees it as a new app): click **Allow** once more.
 
 ## Uninstalling
 

@@ -28,7 +28,7 @@ PatchPrimeMac is free and open source (GPL-3.0-or-later). It needs a Mac with Ap
 4. **At the end of the install, all sound on the Mac stops for a moment** while macOS's audio system restarts with the driver. Turn your speakers or amplifier down first if they're loud.
 5. The engine starts. The first time an input from a microphone is used, macOS asks to let **PatchPrimeMac** use the microphone: allow it, or the mics stay silent.
 
-**Updating:** install the new version the same way, over the old one. Your settings are kept, and the app opens again if it was open. macOS asks for microphone access again after each update, because each version carries its own signature rather than one from Apple: click **Allow** again.
+**Updating:** when a new version is out, a quiet grey note says so in the top bar, beside the mini window button: click it for the Releases page, or the ✕ to hide it until the next version. **Help → Check for Updates…** checks at any time. PatchPrimeMac never downloads or installs anything itself. Install the new version the same way, over the old one. Your settings are kept, and the app opens again if it was open. macOS asks for microphone access again after each update, because each version carries its own signature rather than one from Apple: click **Allow** again.
 
 ### First setup
 
@@ -416,6 +416,6 @@ Run **Uninstall PatchPrimeMac** from the DMG (or the uninstaller in the app's He
 
 ## Privacy
 
-<!-- keywords: privacy, network, data, microphone permission -->
+<!-- keywords: privacy, network, internet, update check, data, microphone permission -->
 
-PatchPrimeMac doesn't connect to the internet, collect anything or send anything anywhere. Your microphones' sound goes only where you route it. macOS asks your permission before the engine can use a microphone.
+PatchPrimeMac doesn't collect anything or send anything anywhere. The one time it goes on the internet is to ask GitHub for the latest version's number: once when the app starts, and when you choose **Help → Check for Updates…**. That request carries nothing about you or your Mac beyond what any web request does (your IP address reaches GitHub), and nothing is downloaded or installed. Your microphones' sound goes only where you route it. macOS asks your permission before the engine can use a microphone.

@@ -22,7 +22,7 @@ cat > "$app/Contents/Info.plist" <<PL
 	<key>CFBundleIdentifier</key><string>com.kingsqueak.patchprimemac</string>
 	<key>CFBundleName</key><string>PatchPrimeMac</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
-	<key>CFBundleShortVersionString</key><string>0.1</string>
+	<key>CFBundleShortVersionString</key><string>$(cat "$root/packaging/VERSION")</string>
 	<key>CFBundleVersion</key><string>1</string>
 	<key>LSMinimumSystemVersion</key><string>26.0</string>
 	<key>NSPrincipalClass</key><string>NSApplication</string>

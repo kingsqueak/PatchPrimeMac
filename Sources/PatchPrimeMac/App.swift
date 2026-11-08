@@ -29,7 +29,7 @@ struct PatchPrimeMacApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("PatchPrimeMac", id: "mixer") {
+        WindowGroup("PatchPrimeMac \(UpdateChecker.current)", id: "mixer") {
             ContentView()
                 .environmentObject(model)
                 .onAppear { model.start() }
@@ -112,7 +112,7 @@ struct MenuContent: View {
             NSApp.activate(ignoringOtherApps: true)
             // The mixer window if it's there (even minimised); a new one if it was closed.
             if let w = NSApp.windows.first(where: {
-                ($0.identifier?.rawValue.hasPrefix("mixer") == true || $0.title == "PatchPrimeMac") && ($0.isVisible || $0.isMiniaturized)
+                ($0.identifier?.rawValue.hasPrefix("mixer") == true || $0.title.hasPrefix("PatchPrimeMac ")) && ($0.isVisible || $0.isMiniaturized)
             }) {
                 if w.isMiniaturized { w.deminiaturize(nil) }
                 w.makeKeyAndOrderFront(nil)
@@ -136,6 +136,7 @@ struct HelpCommand: View {
     var body: some View {
         Button("PatchPrimeMac Help") { openWindow(id: "help") }
             .keyboardShortcut("?", modifiers: .command)
+        Button("Check for Updates…") { UpdateChecker.shared.checkNow() }
         if let uninstaller = EngineAgent.uninstaller {
             Divider()
             Button("Uninstall PatchPrimeMac…") { NSWorkspace.shared.open(uninstaller) }

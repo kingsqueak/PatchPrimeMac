@@ -659,6 +659,7 @@ struct ContentView: View {
                 SoundboardButton()
                 Button { setMini(true) } label: { Image(systemName: "rectangle.compress.vertical") }
                     .help("Mini window: every level and mute, one strip wide")
+                UpdateNote()
                 Spacer()
                 statusText
                 Button(model.snapshot.settings.hardwareOutputEnabled ? "Hardware Output On" : "Hardware Output Off") {
@@ -681,6 +682,7 @@ struct ContentView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onAppear { if !model.offlineSample { UpdateChecker.shared.checkAtStart() } }
             if let error = model.lastError {
                 Text(error).font(.caption).foregroundStyle(.red).padding(6)
             }
