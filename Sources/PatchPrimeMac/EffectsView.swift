@@ -9,22 +9,70 @@ import AppKit
 import PPDSP
 import SwiftUI
 
+/// Which strip, bus or output an effects window edits. Opening the same one again
+/// brings its window forward rather than making a second.
+struct EffectsTarget: Codable, Hashable {
+    var verb: String   // Stage.verb
+    var slot: Int
+
+    var stage: Stage {
+        switch verb {
+        case "bus": return .bus
+        case "out": return .output
+        default: return .input
+        }
+    }
+}
+
 struct EffectsButton: View {
-    @EnvironmentObject var model: Model
+    @Environment(\.openWindow) private var openWindow
     var stage: Stage
     var slot: Int
     var label: String
     var count: Int
     var on = true
-    @State private var open = false
 
     var body: some View {
-        ToggleButton(title: count > 0 ? (on ? "FX \(count)" : "FX OFF") : "FX", on: count > 0 && on, color: .accentColor, textOn: .white) { open = true }
-            .help("Effects on \(label)")
-            .sheet(isPresented: $open) {
-                EffectsEditor(stage: stage, slot: slot, label: label) { open = false }
-                    .environmentObject(model)
+        ToggleButton(title: count > 0 ? (on ? "FX \(count)" : "FX OFF") : "FX", on: count > 0 && on, color: .accentColor, textOn: .white) {
+            openWindow(id: "effects", value: EffectsTarget(verb: stage.verb, slot: slot))
+        }
+        .help("Effects on \(label)")
+    }
+}
+
+/// An effects editor in a window of its own, which can be moved, resized and left
+/// open beside the mixer. Its name follows renames; if the strip goes, it says so.
+struct EffectsWindow: View {
+    @EnvironmentObject var model: Model
+    @Environment(\.dismiss) private var dismiss
+    var target: EffectsTarget
+
+    var label: String? {
+        let s = model.snapshot.settings
+        switch target.stage {
+        case .input: return s.strips.first { $0.slot == target.slot }?.label
+        case .bus: return s.buses.first { $0.slot == target.slot }?.label
+        case .output: return s.outputs.first { $0.slot == target.slot }?.label
+        }
+    }
+
+    var body: some View {
+        Group {
+            if let label {
+                EffectsEditor(stage: target.stage, slot: target.slot, label: label) { dismiss() }
+                    .navigationTitle("Effects on \(label)")
+            } else if !model.loaded {
+                Text("Reading the mix…").foregroundStyle(.secondary)
+                    .frame(minWidth: 400, minHeight: 200)
+            } else {
+                VStack(spacing: 12) {
+                    Text("That strip has been removed.").foregroundStyle(.secondary)
+                    Button("Close") { dismiss() }.keyboardShortcut(.defaultAction)
+                }
+                .frame(minWidth: 400, minHeight: 200)
+                .navigationTitle("Effects")
             }
+        }
     }
 }
 
@@ -119,7 +167,7 @@ struct EffectsEditor: View {
                 }
                 .disabled(effects.count >= maxEffects)
                 .fixedSize()
-                Button("Done", action: done).keyboardShortcut(.defaultAction)
+                Button("Close", action: done).keyboardShortcut(.cancelAction)
             }
             .padding(14)
             Divider()
@@ -139,7 +187,7 @@ struct EffectsEditor: View {
                 .padding(14)
             }
         }
-        .frame(minWidth: 720, idealWidth: 720, minHeight: 520, idealHeight: 720)
+        .frame(minWidth: 640, idealWidth: 720, minHeight: 360, idealHeight: 720)
         .onAppear { feed.start(model, [stage.verb, "\(slot)"]) }
         .sheet(isPresented: $picking) {
             PluginBrowser(done: { picking = false }, pickFor: label) { row in

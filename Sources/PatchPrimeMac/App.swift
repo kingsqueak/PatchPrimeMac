@@ -41,6 +41,13 @@ struct PatchPrimeMacApp: App {
         .commands {
             CommandGroup(replacing: .help) { HelpCommand() }
         }
+        WindowGroup("Effects", id: "effects", for: EffectsTarget.self) { $target in
+            if let target {
+                EffectsWindow(target: target).environmentObject(model)
+            }
+        }
+        .defaultSize(width: 720, height: 720)
+        .windowResizability(.contentMinSize)
         Window("PatchPrimeMac Help", id: "help") {
             HelpView()
         }
