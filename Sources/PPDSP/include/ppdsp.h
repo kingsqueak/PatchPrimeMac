@@ -49,12 +49,16 @@ int pp_fx_active(const PPFx *fx);
 int pp_fx_latency(const PPFx *fx);
 
 // Per-effect levels, for meters in an editor; measuring costs a little, so it's off
-// until turned on. Fills, for each effect, inPeak, outPeak (linear, both channels'
-// highest since the last call): 2 floats each. Returns the number of effects.
+// until turned on. Fills, for each effect, PP_FX_LEVEL_FLOATS floats: the number of
+// channel groups (1 mono, 2 left and right), then inPeak[2], inRms[2], outPeak[2],
+// outRms[2] (linear; peaks are the highest since the last call, RMS over ~300 ms).
+// Returns the number of effects.
+#define PP_FX_LEVEL_FLOATS 9
 void pp_fx_set_metering(PPFx *fx, int on);
 int pp_fx_take_levels(PPFx *fx, float *out, int maxEffects);
-// The key's peak (linear) as of the last pp_fx_take_levels, or -1 if no key came.
+// The key's peak and RMS (linear) as of the last pp_fx_take_levels, or -1 if no key came.
 float pp_fx_key_peak(const PPFx *fx);
+float pp_fx_key_rms(const PPFx *fx);
 // An effect's own meters (gain reduction per band, say), since the last call.
 int pp_fx_take_meters(PPFx *fx, int effect, float *out, int max);
 

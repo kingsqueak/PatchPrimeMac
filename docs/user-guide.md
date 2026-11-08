@@ -149,7 +149,7 @@ What each effect does and how to set it. Effects run in a chain on a strip, bus 
 
 ### Working with effects
 
-<!-- keywords: chain, insert, bypass, all effects, order, add effect, meters, slider, spinner -->
+<!-- keywords: chain, insert, bypass, all effects, order, add effect, meters, meter bridge, gain reduction, gr, threshold, slider, spinner -->
 
 Click **FX** on a strip to open its effects. On an input strip the effects come before the fader, so apps recording a bus the strip feeds get the processed sound; on a bus or output they come after the fader.
 
@@ -158,7 +158,7 @@ Click **FX** on a strip to open its effects. On an input strip the effects come 
 - The **switch** on each effect turns it on or bypasses it, crossfading so it doesn't click. **All effects**, at the top, bypasses every effect at once and brings back the ones that were on.
 - **Sliders**: drag, scroll (Option, Command or the thumb wheel for fine steps), or double-click to reset to the effect's starting value.
 - **Number fields** (the EQ's and multiband's bands): type a value and press Return (`3.5k` works for 3.5 kHz), click the arrows, or scroll.
-- **Meters**, at the top of each effect: **IN** and **OUT**, and how much it's turning the sound down (gate, expander, compressor, de-esser, limiter, multiband). The leveler shows its boost or cut, the ducker its **KEY** (the strip it listens to), noise suppression its **VOICE**. Measuring costs a little, so it only happens while the effects window is open.
+- **Meters**, beside each effect's controls, like a console's meter bridge: **IN** and **OUT** for each channel (the light part is the peak, the solid part the average), and **GR**, how much it's turning the sound down (gate, expander, compressor, de-esser, limiter, ducker, multiband). The leveler shows **GAIN**, its boost or cut, and the ducker its **KEY** (the strip it listens to). The scale runs from 0 down to −80 dB, with each meter's peak in dB under it. A line across a meter marks the setting it's compared with: the threshold of the gate, expander and compressor on **IN**, the limiter's ceiling on **IN** and **OUT**, the ducker's threshold on **KEY**; hover over it for the value. Noise suppression also shows its **Voice** and the leveler its **Loudness**. Measuring costs a little, so it only happens while the effects window is open and can be seen (not minimised or covered).
 - **Muted strips cost nothing:** once a mute (or a fader at the bottom) has faded the sound out, its effects stop, and start again clean when you unmute. A chain with a reverb keeps running, so its tail isn't frozen.
 - **Mono sources** (a single microphone channel) run their effects once rather than on both sides, which halves their cost; a chain with a reverb or leveler stays stereo.
 
@@ -211,7 +211,7 @@ Turns the sound down by **Range** when it falls below **Threshold**, so breaths,
 
 <!-- keywords: denoise, rnnoise, fan, hum, neural, background noise -->
 
-Takes fans, hum and room noise out of a voice with RNNoise, a small neural network from Xiph.Org. **Amount** blends the cleaned voice with the original; 100 % is fully cleaned. The **VOICE** meter shows how sure it is that it hears a voice. It adds 10 ms of delay and works at 48 kHz (at other sample rates it passes the sound through, and says so).
+Takes fans, hum and room noise out of a voice with RNNoise, a small neural network from Xiph.Org. **Amount** blends the cleaned voice with the original; 100 % is fully cleaned. The **Voice** meter shows how sure it is that it hears a voice. It adds 10 ms of delay and works at 48 kHz (at other sample rates it passes the sound through, and says so).
 
 ### Ducker
 

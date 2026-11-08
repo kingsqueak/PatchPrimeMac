@@ -69,10 +69,21 @@ public enum EffectCatalog {
 /// What an open effects editor shows on its meters, for each effect in order: its
 /// level in and out (linear peaks since the last ask) and its own meters.
 public struct FxMeters: Codable, Sendable, Equatable {
-    public var levels: [[Float]] = []
+    /// Each effect's level going in and coming out: one value per channel (one for
+    /// mono, left and right for stereo), linear. Peaks are the highest since the
+    /// last ask; RMS is over about 300 ms.
+    public struct Level: Codable, Sendable, Equatable {
+        public var inPeak: [Float] = []
+        public var inRms: [Float] = []
+        public var outPeak: [Float] = []
+        public var outRms: [Float] = []
+        public init() {}
+    }
+    public var levels: [Level] = []
     public var meters: [[Float]] = []
-    /// The ducker's key, its peak (linear), when the chain has one.
+    /// The ducker's key, its peak and RMS (linear), when the chain has one.
     public var key: Float?
+    public var keyRms: Float?
     public init() {}
 }
 

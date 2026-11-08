@@ -1038,13 +1038,22 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             }
             if metering[key] == nil { pp_fx_set_metering(fx, 1) }
             metering[key] = Date()
-            var levels = [Float](repeating: 0, count: 2 * maxEffects)
+            let stride = Int(PP_FX_LEVEL_FLOATS)
+            var levels = [Float](repeating: 0, count: stride * maxEffects)
             let n = Int(pp_fx_take_levels(fx, &levels, Int32(maxEffects)))
             var report = FxMeters()
             let keyPeak = pp_fx_key_peak(fx)
             report.key = keyPeak >= 0 ? keyPeak : nil
+            report.keyRms = keyPeak >= 0 ? max(0, pp_fx_key_rms(fx)) : nil
             for i in 0..<n {
-                report.levels.append([levels[i * 2], levels[i * 2 + 1]])
+                let l = Array(levels[(i * stride)..<((i + 1) * stride)])
+                let groups = min(2, max(1, Int(l[0])))
+                var level = FxMeters.Level()
+                level.inPeak = Array(l[1..<(1 + groups)])
+                level.inRms = Array(l[3..<(3 + groups)])
+                level.outPeak = Array(l[5..<(5 + groups)])
+                level.outRms = Array(l[7..<(7 + groups)])
+                report.levels.append(level)
                 var own = [Float](repeating: 0, count: 16)
                 let m = Int(pp_fx_take_meters(fx, Int32(i), &own, 16))
                 report.meters.append(Array(own.prefix(m)))

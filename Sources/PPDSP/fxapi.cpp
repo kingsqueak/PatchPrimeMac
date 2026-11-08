@@ -152,6 +152,7 @@ struct PPFx
     double rate = 0;
     int channels = 2;
     float keyPeak = -1;
+    float keyRms = -1;
     std::atomic<bool> canSleep{true}; // read by the audio thread // as of the last take of levels
 };
 
@@ -241,6 +242,7 @@ void pp_fx_process_keyed(PPFx *fx, float *left, float *right, int frames, const 
 }
 
 float pp_fx_key_peak(const PPFx *fx) { return fx->keyPeak; }
+float pp_fx_key_rms(const PPFx *fx) { return fx->keyRms; }
 
 void pp_fx_resume(PPFx *fx)
 {
@@ -312,17 +314,21 @@ int pp_fx_take_levels(PPFx *fx, float *out, int maxEffects)
         return 0;
     }
     const auto levels = chain->takeLevels();
-    fx->keyPeak = !levels.empty() && levels.front().hasKey ? levels.front().keyPeak : -1.0F;
+    const bool keyed = !levels.empty() && levels.front().hasKey;
+    fx->keyPeak = keyed ? levels.front().keyPeak : -1.0F;
+    fx->keyRms = keyed ? levels.front().keyRms : -1.0F;
     const int n = std::min(int(levels.size()), maxEffects);
     for (int i = 0; i < n; ++i) {
         const auto &l = levels[std::size_t(i)];
-        float in = 0, outPeak = 0;
-        for (std::size_t g = 0; g < l.groups; ++g) {
-            in = std::max(in, l.inPeak[g]);
-            outPeak = std::max(outPeak, l.outPeak[g]);
+        float *o = out + std::ptrdiff_t(i) * PP_FX_LEVEL_FLOATS;
+        o[0] = float(l.groups);
+        for (std::size_t g = 0; g < 2; ++g) {
+            const bool has = g < l.groups;
+            o[1 + g] = has ? l.inPeak[g] : 0;
+            o[3 + g] = has ? l.inRms[g] : 0;
+            o[5 + g] = has ? l.outPeak[g] : 0;
+            o[7 + g] = has ? l.outRms[g] : 0;
         }
-        out[i * 2] = in;
-        out[i * 2 + 1] = outPeak;
     }
     return n;
 }

@@ -216,6 +216,7 @@ struct EffectsEditor: View {
         }
         .frame(minWidth: 640, idealWidth: 720, minHeight: 360, idealHeight: 720)
         .onAppear { feed.start(model, [stage.verb, "\(slot)"]) }
+        .background(WindowVisibility { feed.visible = $0 })
         .sheet(isPresented: $picking) {
             PluginBrowser(done: { picking = false }, pickFor: label) { row in
                 model.send("fx-add-plugin", stage.verb, "\(slot)", row.entry.id)
@@ -287,7 +288,6 @@ struct EffectCard: View {
                     .foregroundStyle(effect.enabled ? .primary : .secondary)
                 if !effect.enabled { Text("bypassed").font(.caption).foregroundStyle(.secondary) }
                 Spacer()
-                EffectMeters(type: effect.type, index: index, feed: feed)
                 Menu {
                     let names = model.snapshot.effectPresets[effect.type] ?? []
                     ForEach(names, id: \.self) { name in
@@ -319,42 +319,50 @@ struct EffectCard: View {
                     .help("Remove")
             }
             .buttonStyle(.borderless)
-            if info == nil && !effect.isPlugin {
-                Text("This effect isn't known to this version, so it's skipped.").font(.caption).foregroundStyle(.orange)
-            }
-            if effect.isPlugin {
-                HStack {
-                    Button("Open Window") { model.send(words("fx-window", "\(index)", "open")) }
-                    Text("The plugin's own controls. Changes are saved with this chain, its presets and scenes.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            if effect.type == "ducker" {
-                let strips = model.snapshot.settings.strips.filter { !(stage == .input && $0.slot == slot) }
-                HStack(spacing: 8) {
-                    Text("Listens to").frame(width: 120, alignment: .leading)
-                    Picker("", selection: Binding(get: { effect.key ?? -1 },
-                        set: { model.send(words("fx-key", "\(index)", $0 < 0 ? "none" : "\($0)")) })) {
-                        Text("Nothing").tag(-1)
-                        ForEach(strips, id: \.slot) { Text($0.label).tag($0.slot) }
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 8) {
+                    if info == nil && !effect.isPlugin {
+                        Text("This effect isn't known to this version, so it's skipped.").font(.caption).foregroundStyle(.orange)
                     }
-                    .labelsHidden().fixedSize()
-                    Spacer()
+                    if effect.isPlugin {
+                        HStack {
+                            Button("Open Window") { model.send(words("fx-window", "\(index)", "open")) }
+                            Text("The plugin's own controls. Changes are saved with this chain, its presets and scenes.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    if effect.type == "ducker" {
+                        let strips = model.snapshot.settings.strips.filter { !(stage == .input && $0.slot == slot) }
+                        HStack(spacing: 8) {
+                            Text("Listens to").frame(width: 120, alignment: .leading)
+                            Picker("", selection: Binding(get: { effect.key ?? -1 },
+                                set: { model.send(words("fx-key", "\(index)", $0 < 0 ? "none" : "\($0)")) })) {
+                                Text("Nothing").tag(-1)
+                                ForEach(strips, id: \.slot) { Text($0.label).tag($0.slot) }
+                            }
+                            .labelsHidden().fixedSize()
+                            Spacer()
+                        }
+                        if effect.key == nil {
+                            Text("Choose the strip that should turn this one down while it's above the threshold: a mic over music, say.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    if effect.type == "denoise", model.snapshot.engineRate > 0, model.snapshot.engineRate != 48000 {
+                        Text("Noise suppression works at 48 kHz only. At \(AudioSection.khz(model.snapshot.engineRate)) it passes the sound through unchanged.")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
+                    if effect.type == "eq" {
+                        EqCurve(stage: stage, slot: slot, index: index, effect: effect, rate: model.snapshot.engineRate)
+                    }
+                    ForEach(parts.plain) { p in
+                        ParamControl(info: p, value: effect.params[p.name] ?? p.initial, key: key(p)) { send(p, $0) }
+                    }
+                    EffectMeterRows(type: effect.type, index: index, feed: feed)
                 }
-                if effect.key == nil {
-                    Text("Choose the strip that should turn this one down while it's above the threshold: a mic over music, say.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            if effect.type == "denoise", model.snapshot.engineRate > 0, model.snapshot.engineRate != 48000 {
-                Text("Noise suppression works at 48 kHz only. At \(AudioSection.khz(model.snapshot.engineRate)) it passes the sound through unchanged.")
-                    .font(.caption).foregroundStyle(.orange)
-            }
-            if effect.type == "eq" {
-                EqCurve(stage: stage, slot: slot, index: index, effect: effect, rate: model.snapshot.engineRate)
-            }
-            ForEach(parts.plain) { p in
-                ParamControl(info: p, value: effect.params[p.name] ?? p.initial, key: key(p)) { send(p, $0) }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                EffectMeterBridge(type: effect.type, index: index, on: effect.enabled, params: effect.params,
+                    info: info, feed: feed)
             }
             if !parts.bands.isEmpty {
                 BandMatrix(bands: parts.bands, effect: effect, keyPrefix: "fx-\(stage.verb)\(slot)-\(index)-") { p, v in send(p, v) }
@@ -524,116 +532,6 @@ struct NativeSlider: NSViewRepresentable {
         if !slider.tracking, abs(slider.doubleValue - position) > 1e-9 {
             slider.doubleValue = position
         }
-    }
-}
-
-// MARK: Meters
-
-/// Asks the engine for an open editor's meters, 15 times a second, while it's open.
-@MainActor
-final class MeterFeed: ObservableObject {
-    @Published var meters = FxMeters()
-    /// Gain reduction meters fall back slowly, as on hardware, rather than flicker.
-    @Published var held: [Float] = []
-    private var timer: Timer?
-    private var busy = false
-
-    func start(_ model: Model, _ address: [String]) {
-        guard timer == nil else { return }
-        let t = Timer(timeInterval: 1.0 / 15, repeats: true) { [weak self, weak model] _ in
-            MainActor.assumeIsolated {
-                guard let self, let model, !self.busy else { return }
-                self.busy = true
-                model.ask(["fx-meters"] + address) { reply in
-                    self.busy = false
-                    guard reply.ok, let m = try? JSONDecoder().decode(FxMeters.self, from: Data(reply.text.utf8)) else { return }
-                    self.meters = m
-                }
-            }
-        }
-        RunLoop.main.add(t, forMode: .common)
-        timer = t
-    }
-
-    func stop() {
-        timer?.invalidate()
-        timer = nil
-    }
-}
-
-/// An effect's level in and out, and what it's doing to the gain, in its header.
-struct EffectMeters: View {
-    var type: String
-    var index: Int
-    @ObservedObject var feed: MeterFeed
-
-    static func position(_ linear: Float) -> CGFloat {
-        guard linear > 0 else { return 0 }
-        return CGFloat(min(1, max(0, (20 * log10(linear) + 60) / 60))) // -60 to 0 dBFS
-    }
-
-    var body: some View {
-        let level = index < feed.meters.levels.count ? feed.meters.levels[index] : [0, 0]
-        let own = index < feed.meters.meters.count ? feed.meters.meters[index] : []
-        let reduction = EffectMeterReading.reduction(type, own)
-        HStack(alignment: .top, spacing: 8) {
-            labelled("IN", Bar(fill: Self.position(level.first ?? 0), width: 50, level: true))
-            labelled("OUT", Bar(fill: Self.position(level.count > 1 ? level[1] : 0), width: 50, level: true))
-            if type == "ducker" {
-                let key = feed.meters.key ?? 0
-                labelled("KEY", Bar(fill: Self.position(key), width: 50, level: true))
-                    .help("The level of the strip it listens to")
-            }
-            if type == "denoise" {
-                let voice = own.first ?? 0
-                labelled(String(format: "VOICE %.0f%%", voice), Bar(fill: CGFloat(min(1, max(0, voice / 100))), width: 70, color: .cyan))
-                    .help("How sure noise suppression is that it's hearing a voice, now")
-            }
-            if let reduction {
-                let range = EffectMeterReading.range(type)
-                if type == "leveler" {
-                    labelled(String(format: "%+.1f dB", reduction),
-                        Bar(fill: CGFloat(min(1, abs(reduction) / range)), width: 70, color: reduction >= 0 ? .green : .orange,
-                            centred: true, up: reduction >= 0))
-                        .help("How much it's turning the sound up (+) or down (−), now")
-                } else {
-                    labelled(reduction < 0.05 ? "0.0 dB" : String(format: "−%.1f dB", reduction),
-                        Bar(fill: CGFloat(min(1, reduction / range)), width: 70, color: .orange, fromRight: true))
-                        .help("How much it's turning the sound down, now")
-                }
-            }
-        }
-        .fixedSize()
-    }
-
-    func labelled(_ text: String, _ bar: Bar) -> some View {
-        VStack(spacing: 2) {
-            bar
-            Text(text).font(.system(size: 8, weight: .semibold, design: .monospaced)).foregroundStyle(.secondary)
-                .fixedSize()
-        }
-    }
-}
-
-/// A small horizontal meter, fixed in size.
-struct Bar: View {
-    var fill: CGFloat
-    var width: CGFloat
-    var color: Color = .green
-    var level = false      // colours by level: yellow near the top, red at it
-    var fromRight = false  // gain reduction grows from the right
-    var centred = false    // the leveler's: up or down from the middle
-    var up = true
-
-    var body: some View {
-        let shown = level ? (fill > 0.95 ? Color.red : fill > 0.85 ? Color.yellow : color) : color
-        let length = centred ? width / 2 * fill : width * fill
-        ZStack(alignment: fromRight ? .trailing : .leading) {
-            Capsule().fill(Color.primary.opacity(0.12)).frame(width: width, height: 6)
-            Capsule().fill(shown).frame(width: max(0, length), height: 6)
-                .offset(x: centred ? (up ? width / 2 : width / 2 - length) : 0)
-        }
-        .frame(width: width, height: 6)
     }
 }
 
