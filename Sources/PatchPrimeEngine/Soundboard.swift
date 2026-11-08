@@ -98,9 +98,7 @@ extension Engine {
     func stopPad(_ id: String) {
         guard let (player, feedSlot) = padPlayers.removeValue(forKey: id) else { return }
         if let core, let mixer = pp_engine_mixer(core) { pp_mixer_set_feed(mixer, Int32(feedSlot), nil, 0, 0) }
-        player.stop()
-        let feed = player.feed
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { pp_feed_destroy(feed) } // the audio thread is past it
+        player.stop() // its thread frees the feed when it's done
     }
 
     func stopAllPads() {

@@ -103,6 +103,8 @@ final class Player: @unchecked Sendable {
         thread.start()
     }
 
+    /// Stops it. Take it off the mixer first: its thread frees the feed once it has
+    /// finished, half a second on, when the audio thread is long past it.
     func stop() { lock.withLock { stopped = true } }
 
     private func run() {
@@ -116,7 +118,7 @@ final class Player: @unchecked Sendable {
                 // Drop what's queued (the audio thread does it), then read from there.
                 let ticket = pp_feed_flush(feed)
                 let asked = Date()
-                while pp_feed_flushed(feed, ticket) == 0, Date().timeIntervalSince(asked) < 0.5 {
+                while pp_feed_flushed(feed, ticket) == 0, Date().timeIntervalSince(asked) < 0.5, !lock.withLock({ stopped }) {
                     Thread.sleep(forTimeInterval: 0.002)
                 }
                 ExtAudioFileSeek(file, Int64(to * fileRate))
@@ -161,5 +163,9 @@ final class Player: @unchecked Sendable {
             if pending > 0 { Thread.sleep(forTimeInterval: 0.01) } // full: a second is queued
         }
         ExtAudioFileDispose(file)
+        // Only now, with this thread done with it (however long a read took), and the
+        // mixer off it since before stop(): half a second more for the audio thread.
+        let feed = self.feed
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { pp_feed_destroy(feed) }
     }
 }

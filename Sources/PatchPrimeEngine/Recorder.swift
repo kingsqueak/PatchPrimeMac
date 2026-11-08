@@ -47,6 +47,27 @@ enum RecordingFiles {
         return cleaned.isEmpty || cleaned.hasPrefix(".") ? "Recording" : cleaned
     }
 
+    /// The path, or "<stem> (2).<ext>" and so on when it's taken, created empty there and
+    /// then so the next name chosen (another track called the same, a moment later)
+    /// can't be the same. The writer fills it.
+    static func reserve(_ url: URL) -> URL {
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let base = url.deletingPathExtension().lastPathComponent
+        let ext = url.pathExtension
+        let dir = url.deletingLastPathComponent()
+        var n = 1
+        while true {
+            let candidate = n == 1 ? url : dir.appendingPathComponent(ext.isEmpty ? "\(base) (\(n))" : "\(base) (\(n)).\(ext)")
+            let fd = open(candidate.path, O_CREAT | O_EXCL | O_WRONLY, 0o644)
+            if fd >= 0 {
+                close(fd)
+                return candidate
+            }
+            if errno != EEXIST { return candidate } // the writer will say what's wrong
+            n += 1
+        }
+    }
+
     /// The path, or "<stem> (2).<ext>" and so on when it's taken.
     static func unique(_ url: URL) -> URL {
         let fm = FileManager.default
@@ -123,6 +144,10 @@ final class Recording: @unchecked Sendable {
 
     private func run() {
         guard let file = openFile() else {
+            // Nothing written: the empty file reserved for it goes.
+            if let size = try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int, size == 0 {
+                try? FileManager.default.removeItem(at: url)
+            }
             pp_tap_end(tap)
             while pp_tap_finished(tap) == 0 { // let the queue drain, so it can be freed
                 var sink = [Float](repeating: 0, count: 4096 * channels)
@@ -155,8 +180,9 @@ final class Recording: @unchecked Sendable {
             Thread.sleep(forTimeInterval: 0.02)
         }
         // What was left off the start, as silence at the end, so every track of a take
-        // has the same length. Only once something was written.
-        let pad = latency - skip
+        // has the same length (with any silence still owed for frames a slow disk
+        // lost). Only once something was written.
+        let pad = latency - skip + Int(pp_tap_owed(tap))
         if pad > 0, lock.withLock({ written }) > 0, error == nil {
             let silence = [Float](repeating: 0, count: pad * channels)
             _ = write(file, silence, from: 0, count: pad)

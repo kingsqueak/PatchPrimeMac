@@ -34,4 +34,8 @@ struct PPTap
     // control thread when the mixer is gone: nothing more will be queued.
     std::atomic<bool> finished{false};
     std::atomic<std::uint64_t> dropped{0};
+    // Frames that didn't fit (the disk fell behind), owed as silence: queued before
+    // anything newer as room comes, so the recording keeps its time against the
+    // other tracks of a take. Whatever is still owed at the end, the writer adds.
+    std::atomic<std::uint64_t> owed{0};
 };

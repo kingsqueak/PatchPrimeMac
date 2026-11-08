@@ -44,15 +44,19 @@ void pp_tap_end(PPTap *tap); // the mixer is gone: nothing more will come
 int pp_tap_channels(const PPTap *tap);
 int pp_tap_read(PPTap *tap, float *interleaved, int maxFrames); // frames read
 int pp_tap_finished(const PPTap *tap); // past its stop, and everything read
-unsigned long long pp_tap_dropped(const PPTap *tap); // frames lost to a slow disk
+unsigned long long pp_tap_dropped(const PPTap *tap); // frames lost to a slow disk (made silence)
+// Silence still owed for lost frames once it's finished: the writer adds it at the
+// end, so the track keeps the same length as the take's others.
+unsigned long long pp_tap_owed(const PPTap *tap);
 // One tap per strip, bus or output. Returns 0, or -1 if one is attached already.
 int pp_mixer_attach_tap(PPMixer *m, int kind, int slot, PPTap *tap);
 void pp_mixer_detach_tap(PPMixer *m, int kind, int slot);
 unsigned long long pp_mixer_block(const PPMixer *m);
 
 // Playback. A feed is stereo audio a reader thread queues (pp_feed_write) and the
-// mixer plays into one strip, bus or output: into a strip in place of its device
-// (so its effects can be set up on a recording), added into a bus or output. Silence
+// mixer plays into one strip, bus or output: added in, except that slot 0 (the
+// player) into a strip plays in place of its device (so its effects can be set up on
+// a recording). Silence
 // where nothing is queued, and while paused (keeping its place). Up to PP_MAX_FEEDS at
 // once, each in a slot of its own: the player's and the soundboard's pads.
 typedef struct PPFeed PPFeed;

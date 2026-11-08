@@ -29,13 +29,29 @@ void PPTap::push(const float *left, const float *right, int frames, std::uint64_
         return;
     }
     const std::size_t samples = std::size_t(frames) * std::size_t(channels);
-    const std::size_t w = writeAt.load(std::memory_order_relaxed);
+    std::size_t at = writeAt.load(std::memory_order_relaxed);
     const std::size_t r = readAt.load(std::memory_order_acquire);
-    if (data.size() - (w - r) < samples) {
-        dropped.fetch_add(std::uint64_t(frames), std::memory_order_relaxed); // the disk fell behind
+    std::size_t space = data.size() - (at - r);
+    // Silence owed for blocks that didn't fit, first: a few blocks' worth at a time,
+    // so catching up never makes one cycle long.
+    std::uint64_t debt = owed.load(std::memory_order_relaxed);
+    if (debt > 0) {
+        const std::size_t zeros = std::min<std::size_t>({std::size_t(debt), space / std::size_t(channels),
+                                                          std::size_t(frames) * 8});
+        for (std::size_t i = 0; i < zeros * std::size_t(channels); ++i) {
+            data[at++ & mask] = 0.f;
+        }
+        debt -= zeros;
+        space -= zeros * std::size_t(channels);
+    }
+    if (debt > 0 || space < samples) {
+        // The disk fell behind: this block becomes silence, owed.
+        owed.store(debt + std::uint64_t(frames), std::memory_order_relaxed);
+        dropped.fetch_add(std::uint64_t(frames), std::memory_order_relaxed);
+        writeAt.store(at, std::memory_order_release);
         return;
     }
-    std::size_t at = w;
+    owed.store(0, std::memory_order_relaxed);
     for (int f = 0; f < frames; ++f) {
         data[at++ & mask] = left[f];
         if (channels == 2) {
@@ -88,5 +104,7 @@ int pp_tap_finished(const PPTap *t)
 }
 
 unsigned long long pp_tap_dropped(const PPTap *t) { return t->dropped.load(std::memory_order_relaxed); }
+
+unsigned long long pp_tap_owed(const PPTap *t) { return t->owed.load(std::memory_order_acquire); }
 
 } // extern "C"

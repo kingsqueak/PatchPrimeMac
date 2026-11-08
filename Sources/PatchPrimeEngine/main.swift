@@ -578,12 +578,16 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             let latency = processed ? Int(pp_fx_latency(pp_mixer_effects(mixer, kind, Int32(slot)))) : 0
             let fileName = take ? "\(RecordingFiles.stem(name)).\(format.fileExtension)"
                                 : "\(RecordingFiles.stem(name)) \(RecordingFiles.stamp(now)).\(format.fileExtension)"
-            let url = RecordingFiles.unique(folder.appendingPathComponent(fileName))
-            guard let tap = pp_tap_create(mono ? 1 : 2, Int32(min(engineRate * 4, Double(1 << 20)))) else { continue }
+            let url = RecordingFiles.reserve(folder.appendingPathComponent(fileName))
+            guard let tap = pp_tap_create(mono ? 1 : 2, Int32(min(engineRate * 4, Double(1 << 20)))) else {
+                try? FileManager.default.removeItem(at: url) // the empty file reserved for it
+                continue
+            }
             pp_tap_set_processed(tap, processed ? 1 : 0)
             pp_tap_set_window(tap, start, UInt64.max)
             guard pp_mixer_attach_tap(mixer, kind, Int32(slot), tap) == 0 else {
                 pp_tap_destroy(tap)
+                try? FileManager.default.removeItem(at: url)
                 continue
             }
             let rec = Recording(key: key, tap: tap, url: url, take: take, format: format, rate: engineRate, latency: latency)
@@ -610,7 +614,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         if recordings[rec.key] === rec { recordings[rec.key] = nil }
         if let error = rec.error { recordNote = "Recording \(rec.url.lastPathComponent): \(error)" }
         if pp_tap_dropped(rec.tap) > 0 {
-            recordNote = "\(rec.url.lastPathComponent) lost \(pp_tap_dropped(rec.tap)) frames: the disk couldn't keep up."
+            recordNote = "\(rec.url.lastPathComponent): the disk couldn't keep up, so \(String(format: "%.1f", Double(pp_tap_dropped(rec.tap)) / max(1, engineRate))) s of it is silence (in its place, so a take's tracks still line up)."
         }
         let tap = rec.tap
         if rec.attached, let core, let mixer = pp_engine_mixer(core), let (kind, slot) = chainAddress(rec.key) {
@@ -649,9 +653,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         guard let player else { return }
         self.player = nil
         if let core, let mixer = pp_engine_mixer(core) { pp_mixer_set_feed(mixer, 0, nil, 0, 0) }
-        player.stop()
-        let feed = player.feed
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { pp_feed_destroy(feed) } // the audio thread is past it
+        player.stop() // its thread frees the feed when it's done
     }
 
     /// Points the player at its target again (after the target changed).

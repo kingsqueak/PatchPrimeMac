@@ -163,16 +163,16 @@ struct PPMixer
     std::array<std::atomic<PPFeed *>, PP_MAX_FEEDS> feed{};
     std::array<std::atomic<int>, PP_MAX_FEEDS> feedTarget{};
 
-    // [RT] The feeds that play into this one. Into a strip in place of its device:
-    // the first replaces, the rest add.
+    // [RT] The feeds that play into this one. The player (slot 0) into a strip plays in
+    // place of its device or apps (so its effects can be set up on a recording); the
+    // soundboard's pads always add, wherever they play.
     void playFeed(int kind, int slot, Stereo &audio, int frames, bool replace)
     {
         const int here = kind * 64 + slot;
         for (std::size_t n = 0; n < feed.size(); ++n) {
             PPFeed *f = feed[n].load(std::memory_order_acquire);
             if (f && feedTarget[n].load(std::memory_order_relaxed) == here) {
-                f->play(audio.left, audio.right, frames, replace);
-                replace = false;
+                f->play(audio.left, audio.right, frames, replace && n == 0);
             }
         }
     }
