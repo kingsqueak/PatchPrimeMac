@@ -9,6 +9,11 @@ import PPDSP
 
 nonisolated(unsafe) var failures = 0
 
+/// The CPU time this thread has used, in seconds. Comparisons of cost use it rather than
+/// the clock on the wall: time the test spends waiting for a CPU (a busy machine, a
+/// shared CI runner) isn't the code's cost.
+func threadSeconds() -> Double { Double(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)) / 1e9 }
+
 func check(_ name: String, _ ok: Bool, _ detail: String = "") {
     print("\(ok ? "ok  " : "FAIL") \(name) \(detail)")
     if !ok { failures += 1 }
@@ -157,6 +162,20 @@ do { // Cost: a busy mixer, measured.
     pp_mixer_destroy(m)
 }
 
+/// Random numbers from a fixed seed (SplitMix64): the "noise" in these tests is the same
+/// on every run and every machine, so a result can't depend on the luck of the draw.
+struct SeededRandom: RandomNumberGenerator {
+    var state: UInt64
+    init(_ seed: UInt64 = 0x5EED_1234_ABCD) { state = seed }
+    mutating func next() -> UInt64 {
+        state &+= 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return z ^ (z >> 31)
+    }
+}
+
 // Clock bridge: two simulated clocks with noisy timestamps.
 struct BridgeRun {
     var ratio = 0.0
@@ -172,8 +191,8 @@ func simulate(ppm: Double, producerBlock: Int, consumerBlock: Int, saved: Double
     producerRate: Double = 48000, consumerRate: Double = 48000, tone: Double = 0,
     capture: UnsafeMutablePointer<[Float]>? = nil, steady: Bool = false) -> BridgeRun {
     let b = pp_bridge_create(producerRate, consumerRate, Int32(producerBlock), Int32(consumerBlock), saved)!
-    var generator = SystemRandomNumberGenerator()
-    let jitter = { (g: inout SystemRandomNumberGenerator) -> Double in
+    var generator = SeededRandom()
+    let jitter = { (g: inout SeededRandom) -> Double in
         steady ? 0 : Double.random(in: -60e-6...60e-6, using: &g)
     }
     var inLeft = [Float](repeating: 0.25, count: producerBlock)
@@ -310,7 +329,9 @@ do {
         check(String(format: "bridge %.1f to %.1f kHz: filter %.0f dB, with jitter %.0f dB, %.1f ppm",
             p / 1000, c / 1000, filter, wander, run.ratio),
             filter < -90 && wander < -70 && run.underruns == 0 && run.overruns == 0
-                && abs(run.ratio + 18) < 2, "\(run)")
+                && abs(run.ratio + 18) < 3, "\(run)")
+        // ±60 µs of timestamp jitter over 30 s puts the estimate within about ±2 ppm of
+        // the truth; 3 is that with room. How it sounds is checked by the two levels.
     }
     for (p, c) in [(192000.0, 48000.0), (96000.0, 48000.0), (48000.0, 44100.0)] {
         var out: [Float] = []
@@ -381,7 +402,7 @@ do {
 
     // Every effect at its defaults: finite output from noise, and what each costs.
     pp_mixer_set_effects(m, Int32(PP_KIND_OUTPUT), 0, "")
-    var generator = SystemRandomNumberGenerator()
+    var generator = SeededRandom()
     var report: [String] = []
     var allFinite = true
     for type in types {
@@ -499,7 +520,7 @@ do {
         }
         var out: [Float] = []
         var phase = 0.0
-        let start = DispatchTime.now().uptimeNanoseconds
+        let start = threadSeconds()
         for block in 0..<1500 { // 4 s
             let l = pp_mixer_input_left(m, 0)!, r = pp_mixer_input_right(m, 0)!
             for i in 0..<128 {
@@ -515,11 +536,17 @@ do {
                 for i in 0..<128 where pp_mixer_output_left(m, 0)[i] != pp_mixer_output_right(m, 0)[i] { out.append(.nan) }
             }
         }
-        let seconds = Double(DispatchTime.now().uptimeNanoseconds - start) / 1e9
+        let seconds = threadSeconds() - start
         pp_mixer_destroy(m)
         return (out, seconds)
     }
-    let stereo = run(mono: false), mono = run(mono: true)
+    // Best of three each, taken in turn, so a neighbour's burst can't decide it.
+    var stereo = run(mono: false), mono = run(mono: true)
+    for _ in 0..<2 {
+        let s = run(mono: false), m = run(mono: true)
+        if s.seconds < stereo.seconds { stereo = s }
+        if m.seconds < mono.seconds { mono = m }
+    }
     check("mono: left and right come out the same", !mono.out.contains { $0.isNaN })
     let worst = zip(stereo.out, mono.out).map { abs($0 - $1) }.max() ?? 1
     check(String(format: "mono sounds the same as stereo (largest difference %.2g)", worst), worst < 1e-5 && stereo.out.count == mono.out.count)
@@ -534,15 +561,18 @@ do {
     pp_mixer_set_output_active(m, 0, 1)
     pp_mixer_set_input_to_output(m, 0, 0, 1)
     func time(_ blocks: Int, _ value: Float) -> Double {
-        let start = DispatchTime.now().uptimeNanoseconds
+        let start = threadSeconds()
         for _ in 0..<blocks { fill(m, 0, value, value); pp_mixer_process(m, 128) }
-        return Double(DispatchTime.now().uptimeNanoseconds - start) / 1e9
+        return threadSeconds() - start
     }
     pp_mixer_set_effects(m, Int32(PP_KIND_STRIP), 0, "denoise\t1\t\nmultiband\t1\t\neq\t1\t\ncompressor\t1\t")
-    let awake = time(1500, 0.1)
+    // Best of three each (see threadSeconds).
+    var awake = time(1500, 0.1)
+    for _ in 0..<2 { awake = min(awake, time(1500, 0.1)) }
     pp_mixer_set_input_mute(m, 0, 1)
     _ = time(20, 0.1) // the fade
-    let muted = time(1500, 0.1)
+    var muted = time(1500, 0.1)
+    for _ in 0..<2 { muted = min(muted, time(1500, 0.1)) }
     check(String(format: "a muted strip's effects stop: %.2f%% of a core muted, %.2f%% playing", 100 * muted / 4, 100 * awake / 4),
         muted < awake * 0.25)
     // Unmute: the chain starts clean. A 50 ms delay held a tone when it was muted; none of

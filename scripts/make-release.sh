@@ -47,9 +47,12 @@ swift build -c release --arch arm64
 bin="$(swift build -c release --arch arm64 --show-bin-path)"
 
 echo "== Testing"
-"$bin/ppdsp-test" | tail -1
-"$bin/ppshared-test" | tail -1
-"$bin/ppcore-test" | tail -1
+# Each prints its summary, and any failures by name (with what they measured).
+for t in ppdsp-test ppshared-test ppcore-test; do
+    if "$bin/$t" > "$out/$t.log"; then status=0; else status=$?; fi
+    grep -E '^(FAIL|not ok)|FAILED|^all passed' "$out/$t.log" || true
+    [ $status -eq 0 ] || { echo "$t failed:"; cat "$out/$t.log"; exit 1; }
+done
 
 echo "== Assembling the app"
 payload="$out/payload"
