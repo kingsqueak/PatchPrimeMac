@@ -419,19 +419,34 @@ struct SetupView: View {
                         Button("Delete") { model.send("virtual-remove", "\(v.slot)") }
                     }
                 }
-                TextField("New device name", text: $virtualName)
+                let used = snap.virtuals.map(\.slot)
+                let free = (0..<16).first { !used.contains($0) }
+                TextField("New device", text: $virtualName, prompt: Text("Name (optional)"))
                 Picker("Kind", selection: $virtualOutput) {
-                    Text("Apps play here").tag(true)
-                    Text("Apps record here").tag(false)
+                    Text("Apps play here (a new strip)").tag(true)
+                    Text("Apps record here (a new output)").tag(false)
                 }
                 Button("Create Virtual Device") {
-                    let used = snap.virtuals.map(\.slot)
-                    if let slot = (0..<16).first(where: { !used.contains($0) }) {
-                        model.send(["virtual-add", "\(slot)", virtualOutput ? "out" : "in", virtualName])
-                        virtualName = ""
+                    let output = virtualOutput
+                    let typed = virtualName.trimmingCharacters(in: .whitespaces)
+                    virtualName = ""
+                    // Create it and give it its strip or output, so it's ready to route:
+                    // an "apps record here" device carries whatever is routed to that
+                    // output (a mix bus, say) into other apps as a microphone.
+                    model.sequence { send in
+                        guard let slot = StartHereView.freeSlot(send) else { return "All 16 virtual devices are in use." }
+                        let name = typed.isEmpty ? "Device \(slot + 1)" : typed
+                        var r = send(["virtual-add", "\(slot)", output ? "out" : "in", name])
+                        if !r.ok { return r.text }
+                        r = output ? send(["strip-add", name, "virtual", "\(slot)"])
+                                   : send(["out-add", name, "virtual", "\(slot)"])
+                        return r.ok ? nil : r.text
                     }
                 }
-                .disabled(virtualName.isEmpty)
+                .disabled(free == nil)
+                if free == nil {
+                    Text("All 16 virtual devices are in use. Delete one to make another.").font(.caption).foregroundStyle(.secondary)
+                }
             }
         }
         .formStyle(.grouped)
