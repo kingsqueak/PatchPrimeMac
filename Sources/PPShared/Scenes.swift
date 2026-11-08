@@ -23,6 +23,7 @@ public struct MixScene: Codable, Equatable, Sendable {
         public var outputSends: [Send]
         public var effects: [EffectSetting]
         public var effectsOn: Bool
+        public var preset: String? = nil
     }
 
     public struct BusMix: Codable, Equatable, Sendable {
@@ -33,6 +34,7 @@ public struct MixScene: Codable, Equatable, Sendable {
         public var outputSends: [Send]
         public var effects: [EffectSetting]
         public var effectsOn: Bool
+        public var preset: String? = nil
     }
 
     public struct OutputMix: Codable, Equatable, Sendable {
@@ -42,6 +44,7 @@ public struct MixScene: Codable, Equatable, Sendable {
         public var muted: Bool
         public var effects: [EffectSetting]
         public var effectsOn: Bool
+        public var preset: String? = nil
     }
 
     public var version = 1
@@ -60,15 +63,15 @@ public struct MixScene: Codable, Equatable, Sendable {
         saved = Date()
         strips = s.strips.map {
             StripMix(slot: $0.slot, label: $0.label, gain: $0.gain, muted: $0.muted, busSends: $0.busSends,
-                outputSends: $0.outputSends, effects: $0.effects, effectsOn: $0.effectsOn)
+                outputSends: $0.outputSends, effects: $0.effects, effectsOn: $0.effectsOn, preset: $0.preset)
         }
         buses = s.buses.map {
             BusMix(slot: $0.slot, label: $0.label, gain: $0.gain, muted: $0.muted, outputSends: $0.outputSends,
-                effects: $0.effects, effectsOn: $0.effectsOn)
+                effects: $0.effects, effectsOn: $0.effectsOn, preset: $0.preset)
         }
         outputs = s.outputs.map {
             OutputMix(slot: $0.slot, label: $0.label, gain: $0.gain, muted: $0.muted, effects: $0.effects,
-                effectsOn: $0.effectsOn)
+                effectsOn: $0.effectsOn, preset: $0.preset)
         }
         self.defaultOutput = defaultOutput
         self.defaultInput = defaultInput
@@ -121,6 +124,7 @@ public struct MixScene: Codable, Equatable, Sendable {
             s.strips[i].outputSends = sends(st.outputSends, outputAt)
             s.strips[i].effects = effects(st.effects)
             s.strips[i].effectsOn = st.effectsOn
+            s.strips[i].preset = st.preset
             count += 1
         }
         for b in buses {
@@ -130,6 +134,7 @@ public struct MixScene: Codable, Equatable, Sendable {
             s.buses[i].outputSends = sends(b.outputSends, outputAt)
             s.buses[i].effects = effects(b.effects)
             s.buses[i].effectsOn = b.effectsOn
+            s.buses[i].preset = b.preset
             count += 1
         }
         for o in outputs {
@@ -138,6 +143,7 @@ public struct MixScene: Codable, Equatable, Sendable {
             s.outputs[i].muted = o.muted
             s.outputs[i].effects = effects(o.effects)
             s.outputs[i].effectsOn = o.effectsOn
+            s.outputs[i].preset = o.preset
             count += 1
         }
         return (s, count)

@@ -500,6 +500,16 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         }
     }
 
+    /// Records which chain preset is on a strip, bus or output.
+    func markPreset(_ settings: inout Settings, _ kind: String, _ slot: Int, _ name: String?) {
+        switch kind {
+        case "strip": if let i = settings.strips.firstIndex(where: { $0.slot == slot }) { settings.strips[i].preset = name }
+        case "bus": if let i = settings.buses.firstIndex(where: { $0.slot == slot }) { settings.buses[i].preset = name }
+        case "out": if let i = settings.outputs.firstIndex(where: { $0.slot == slot }) { settings.outputs[i].preset = name }
+        default: break
+        }
+    }
+
     func bindInput(_ core: OpaquePointer, _ slot: Int, _ device: AudioDeviceInfo, _ left: Int, _ right: Int) -> Bool {
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else {
             if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
@@ -960,6 +970,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             let a = Array(args)
             guard let slot = Int(a[1]) else { break }
             var later = false
+            var emptied = false
             let problem = editChain(&next, a[0], slot) { chain in
                 switch verb {
                 case "fx-add":
@@ -972,6 +983,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
                 case "fx-remove":
                     guard let i = Int(a[2]), chain.indices.contains(i) else { return "no effect \(a[2])" }
                     chain.remove(at: i)
+                    emptied = chain.isEmpty
                 case "fx-move":
                     guard let from = Int(a[2]), let to = Int(a[3]), chain.indices.contains(from), chain.indices.contains(to)
                     else { return "no such effect" }
@@ -998,6 +1010,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
                 return nil
             }
             if let problem { return Reply(ok: false, text: problem) }
+            if emptied { markPreset(&next, a[0], slot, nil) } // no chain, so no preset on it
             return commit(next, "done", later: later)
         case "fx-key" where args.count == 4:
             // fx-key strip|bus|out <n> <i> <strip>|none: which strip a ducker listens to.
@@ -1261,7 +1274,8 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
                 guard presets.saveChain(name, current) else {
                     return Reply(ok: false, text: presets.lastError ?? "a preset needs a name")
                 }
-                return Reply(ok: true, text: "saved \"\(PresetStore.clean(name))\"")
+                markPreset(&next, a[0], slot, PresetStore.clean(name))
+                return commit(next, "saved \"\(PresetStore.clean(name))\"")
             }
             guard let chain = presets.chain(name) else { return Reply(ok: false, text: "no preset called \"\(name)\"") }
             let known = chain.filter { e in catalog.contains { $0.type == e.type } }.prefix(maxEffects)
@@ -1275,6 +1289,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             }) {
                 return Reply(ok: false, text: problem)
             }
+            markPreset(&next, a[0], slot, PresetStore.clean(name))
             return commit(next, "loaded \"\(PresetStore.clean(name))\"")
         case "preset-delete" where args.count >= 1:
             let name = args.joined(separator: " ")

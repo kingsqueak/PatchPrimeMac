@@ -105,11 +105,29 @@ struct EffectsEditor: View {
         }
     }
 
+    /// The chain preset last loaded or saved here.
+    var current: String? {
+        let s = model.snapshot.settings
+        switch stage {
+        case .input: return s.strips.first { $0.slot == slot }?.preset
+        case .bus: return s.buses.first { $0.slot == slot }?.preset
+        case .output: return s.outputs.first { $0.slot == slot }?.preset
+        }
+    }
+
     var placement: String {
         switch stage {
         case .input: return "Before the fader: apps recording a bus this strip feeds hear these effects."
         case .bus: return "After the fader."
         case .output: return "After the fader."
+        }
+    }
+
+    @ViewBuilder func presetItem(_ name: String) -> some View {
+        Button {
+            model.send("preset-load", stage.verb, "\(slot)", name)
+        } label: {
+            if name == current { Label(name, systemImage: "checkmark") } else { Text(name) }
         }
     }
 
@@ -127,25 +145,32 @@ struct EffectsEditor: View {
                     .toggleStyle(.switch)
                     .disabled(effects.isEmpty)
                     .help("Bypass every effect here at once. Each effect keeps its own switch for when they're back on.")
-                Menu("Presets") {
+                let mine = model.snapshot.chainPresets
+                Menu {
                     Section("Built in") {
                         ForEach(model.snapshot.builtInChains, id: \.self) { name in
-                            Button(name) { model.send("preset-load", stage.verb, "\(slot)", name) }
+                            presetItem(name)
                         }
                     }
-                    if !model.snapshot.chainPresets.isEmpty {
+                    if !mine.isEmpty {
                         Section("Yours") {
-                            ForEach(model.snapshot.chainPresets, id: \.self) { name in
-                                Button(name) { model.send("preset-load", stage.verb, "\(slot)", name) }
+                            ForEach(mine, id: \.self) { name in
+                                presetItem(name)
                             }
                         }
                     }
                     Divider()
                     Button("Save Chain as Preset…") {
-                        presetName = ""
+                        presetName = current ?? ""
                         saving = true
                     }
                     .disabled(effects.isEmpty)
+                    if let current, mine.contains(current) {
+                        Button("Update \"\(current)\" with This Chain") {
+                            model.send("preset-save", stage.verb, "\(slot)", current)
+                        }
+                        .disabled(effects.isEmpty)
+                    }
                     if !model.snapshot.chainPresets.isEmpty {
                         Menu("Delete") {
                             ForEach(model.snapshot.chainPresets, id: \.self) { name in
@@ -153,6 +178,8 @@ struct EffectsEditor: View {
                             }
                         }
                     }
+                } label: {
+                    Text(current.map { mine.contains($0) || model.snapshot.builtInChains.contains($0) ? $0 : "Presets" } ?? "Presets")
                 }
                 .fixedSize()
                 .help("Load a whole chain onto \(label), replacing what's here, or save this one")

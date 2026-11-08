@@ -123,6 +123,8 @@ public struct Strip: Codable, Equatable, Sendable {
     public var effects: [EffectSetting] = []
     /// Every effect on or bypassed at once, keeping each one's own switch.
     public var effectsOn = true
+    /// The chain preset last loaded or saved here, offered first when saving again.
+    public var preset: String?
 
     public init(slot: Int, label: String, source: Endpoint) {
         self.slot = slot
@@ -130,7 +132,7 @@ public struct Strip: Codable, Equatable, Sendable {
         self.source = source
     }
 
-    enum CodingKeys: String, CodingKey { case slot, label, source, gain, muted, busSends, outputSends, effects, effectsOn }
+    enum CodingKeys: String, CodingKey { case slot, label, source, gain, muted, busSends, outputSends, effects, effectsOn, preset }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -143,6 +145,7 @@ public struct Strip: Codable, Equatable, Sendable {
         outputSends = try c.decodeIfPresent([Send].self, forKey: .outputSends) ?? []
         effects = try c.decodeIfPresent([EffectSetting].self, forKey: .effects) ?? []
         effectsOn = try c.decodeIfPresent(Bool.self, forKey: .effectsOn) ?? true
+        preset = try c.decodeIfPresent(String.self, forKey: .preset)
     }
 }
 
@@ -156,13 +159,15 @@ public struct Bus: Codable, Equatable, Sendable {
     public var effects: [EffectSetting] = []
     /// Every effect on or bypassed at once, keeping each one's own switch.
     public var effectsOn = true
+    /// The chain preset last loaded or saved here, offered first when saving again.
+    public var preset: String?
 
     public init(slot: Int, label: String) {
         self.slot = slot
         self.label = label
     }
 
-    enum CodingKeys: String, CodingKey { case slot, label, gain, muted, outputSends, effects, effectsOn }
+    enum CodingKeys: String, CodingKey { case slot, label, gain, muted, outputSends, effects, effectsOn, preset }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -173,6 +178,7 @@ public struct Bus: Codable, Equatable, Sendable {
         outputSends = try c.decodeIfPresent([Send].self, forKey: .outputSends) ?? []
         effects = try c.decodeIfPresent([EffectSetting].self, forKey: .effects) ?? []
         effectsOn = try c.decodeIfPresent(Bool.self, forKey: .effectsOn) ?? true
+        preset = try c.decodeIfPresent(String.self, forKey: .preset)
     }
 }
 
@@ -186,6 +192,8 @@ public struct Output: Codable, Equatable, Sendable {
     public var effects: [EffectSetting] = []
     /// Every effect on or bypassed at once, keeping each one's own switch.
     public var effectsOn = true
+    /// The chain preset last loaded or saved here, offered first when saving again.
+    public var preset: String?
 
     public init(slot: Int, label: String, sink: Endpoint) {
         self.slot = slot
@@ -193,7 +201,7 @@ public struct Output: Codable, Equatable, Sendable {
         self.sink = sink
     }
 
-    enum CodingKeys: String, CodingKey { case slot, label, sink, gain, muted, effects, effectsOn }
+    enum CodingKeys: String, CodingKey { case slot, label, sink, gain, muted, effects, effectsOn, preset }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -204,6 +212,7 @@ public struct Output: Codable, Equatable, Sendable {
         muted = try c.decodeIfPresent(Bool.self, forKey: .muted) ?? false
         effects = try c.decodeIfPresent([EffectSetting].self, forKey: .effects) ?? []
         effectsOn = try c.decodeIfPresent(Bool.self, forKey: .effectsOn) ?? true
+        preset = try c.decodeIfPresent(String.self, forKey: .preset)
     }
 }
 
