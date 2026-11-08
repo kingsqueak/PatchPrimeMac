@@ -159,16 +159,21 @@ struct PPMixer
     std::array<std::atomic<PPTap *>, PP_MAX_BUSES> busTap{};
     std::array<std::atomic<PPTap *>, PP_MAX_OUTPUTS> outputTap{};
     std::atomic<unsigned long long> block{0};
-    // The player: its feed and where it plays (kind * 64 + slot, so both change at once).
-    std::atomic<PPFeed *> feed{nullptr};
-    std::atomic<int> feedTarget{-1};
+    // The player and the pads: each feed and where it plays (kind * 64 + slot).
+    std::array<std::atomic<PPFeed *>, PP_MAX_FEEDS> feed{};
+    std::array<std::atomic<int>, PP_MAX_FEEDS> feedTarget{};
 
-    // [RT] The player into this one, if it plays here.
+    // [RT] The feeds that play into this one. Into a strip in place of its device:
+    // the first replaces, the rest add.
     void playFeed(int kind, int slot, Stereo &audio, int frames, bool replace)
     {
-        PPFeed *f = feed.load(std::memory_order_acquire);
-        if (f && feedTarget.load(std::memory_order_relaxed) == kind * 64 + slot) {
-            f->play(audio.left, audio.right, frames, replace);
+        const int here = kind * 64 + slot;
+        for (std::size_t n = 0; n < feed.size(); ++n) {
+            PPFeed *f = feed[n].load(std::memory_order_acquire);
+            if (f && feedTarget[n].load(std::memory_order_relaxed) == here) {
+                f->play(audio.left, audio.right, frames, replace);
+                replace = false;
+            }
         }
     }
 
@@ -550,10 +555,13 @@ void pp_mixer_detach_tap(PPMixer *m, int kind, int slot)
 
 unsigned long long pp_mixer_block(const PPMixer *m) { return m->block.load(std::memory_order_acquire); }
 
-void pp_mixer_set_feed(PPMixer *m, PPFeed *feed, int kind, int slot)
+void pp_mixer_set_feed(PPMixer *m, int index, PPFeed *feed, int kind, int slot)
 {
-    m->feedTarget.store(feed ? kind * 64 + slot : -1, std::memory_order_relaxed);
-    m->feed.store(feed, std::memory_order_release);
+    if (index < 0 || index >= PP_MAX_FEEDS) {
+        return;
+    }
+    m->feedTarget[size_t(index)].store(feed ? kind * 64 + slot : -1, std::memory_order_relaxed);
+    m->feed[size_t(index)].store(feed, std::memory_order_release);
 }
 
 void pp_mixer_process(PPMixer *m, int frames)

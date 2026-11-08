@@ -25,6 +25,14 @@ final class Player: @unchecked Sendable {
     private var stopped = false
     private var paused = false
 
+    /// Whether macOS can read url as sound.
+    static func canPlay(_ url: URL) -> Bool {
+        var ref: ExtAudioFileRef?
+        guard ExtAudioFileOpenURL(url as CFURL, &ref) == noErr, let ref else { return false }
+        ExtAudioFileDispose(ref)
+        return true
+    }
+
     /// Opens url for playing at the engine's rate; nil with a reason when it can't.
     static func open(_ url: URL, rate: Double) -> (Player?, String?) {
         var ref: ExtAudioFileRef?

@@ -242,6 +242,16 @@ extension Snapshot {
         s.recording = ["b0": 83]
         s.player = PlayerState(path: "/tmp/RE20 2026-11-08 14-30-07.flac", paused: false, position: 42, duration: 185)
         s.playInto = "s0"
+        s.settings.pads = [("Applause", "Crowd"), ("Laughter", "Crowd"), ("Cheer", "Crowd"), ("Ba-Dum-Tss", "Comedy"),
+            ("Sad Trombone", "Comedy"), ("Air Horn", "Horns and Sirens"), ("Siren Wail", "Horns and Sirens"),
+            ("Kick", "Drums"), ("Snare", "Drums"), ("Crash", "Drums"), ("Station ID", "")].enumerated().map { i, p in
+            var pad = SoundPad(id: "p\(i)", label: p.0, path: "/tmp/\(p.0).wav", group: p.1)
+            if p.0 == "Laughter" { pad.loop = true }
+            if p.0 == "Air Horn" { pad.gainDb = -6 }
+            return pad
+        }
+        s.padsPlaying = ["p1": [4, 13.8], "p5": [0.4, 2.2]]
+        s.padsInto = "b0"
         s.settings.armed = ["s1"]
         s.builtInChains = BuiltInChains.names
         s.chainPresets = ["RE20 streaming"]

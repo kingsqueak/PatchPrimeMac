@@ -619,6 +619,7 @@ struct ContentView: View {
                 .frame(width: 260)
                 SceneMenu()
                 RecordingsButton()
+                SoundboardButton()
                 Button { setMini(true) } label: { Image(systemName: "rectangle.compress.vertical") }
                     .help("Mini window: every level and mute, one strip wide")
                 Spacer()

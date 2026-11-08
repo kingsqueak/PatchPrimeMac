@@ -35,6 +35,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     var recordings: [String: Recording] = [:]
     var recordNote: String?
     var player: Player?
+    var padPlayers: [String: (player: Player, slot: Int)] = [:] // soundboard pads playing, by id
     // The built-in effects, and the chains last given to the mixer, by "s0", "b1", "o2",
     // so only a real change reaches it.
     let catalog: [EffectInfo] = {
@@ -88,6 +89,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         settings = loaded.settings
         note = loaded.note
         if !presets.load() { note = presets.lastError }
+        seedPads()
         refreshDevices()
         var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
             mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
@@ -102,6 +104,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         clockTimer.setEventHandler { [weak self] in
             self?.steerClock()
             if let player = self?.player, player.finished { self?.stopPlayer() } // played to the end
+            self?.tidyPads()
         }
         clockTimer.resume()
         signal(SIGTERM, SIG_IGN)
@@ -146,6 +149,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             recordNote = "Recording stopped: the engine restarted (a sample rate or buffer change, or macOS's audio system). What was recorded until then is kept."
         }
         stopPlayer() // its feed is the old mixer's, at the old rate
+        stopAllPads()
         if let core { pp_engine_destroy(core) }
         core = nil
         plugins.releaseAll(now: true) // no audio thread has them now
@@ -280,6 +284,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         let gone = recordings.keys.filter { label(of: $0) == nil }
         if !gone.isEmpty { stopRecording(gone) }
         retargetPlayer()
+        tidyPads()
         offline = []
         wiring = []
         for slot in 0..<Int(PP_MAX_INPUTS) {
@@ -636,14 +641,14 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         guard let opened else { return Reply(ok: false, text: problem ?? "couldn't play that") }
         player = opened
         opened.start(looping: settings.playLoop)
-        pp_mixer_set_feed(mixer, opened.feed, kind, Int32(slot))
+        pp_mixer_set_feed(mixer, 0, opened.feed, kind, Int32(slot))
         return Reply(ok: true, text: "playing into \(label(of: target) ?? target)")
     }
 
     func stopPlayer() {
         guard let player else { return }
         self.player = nil
-        if let core, let mixer = pp_engine_mixer(core) { pp_mixer_set_feed(mixer, nil, 0, 0) }
+        if let core, let mixer = pp_engine_mixer(core) { pp_mixer_set_feed(mixer, 0, nil, 0, 0) }
         player.stop()
         let feed = player.feed
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { pp_feed_destroy(feed) } // the audio thread is past it
@@ -653,7 +658,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     func retargetPlayer() {
         guard let player, let core, let mixer = pp_engine_mixer(core) else { return }
         guard let target = playTarget(), let (kind, slot) = chainAddress(target) else { stopPlayer(); return }
-        pp_mixer_set_feed(mixer, player.feed, kind, Int32(slot))
+        pp_mixer_set_feed(mixer, 0, player.feed, kind, Int32(slot))
     }
 
     func chainAddress(_ key: String) -> (Int32, Int)? {
@@ -860,6 +865,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             Thread.sleep(forTimeInterval: 0.02)
         }
         stopPlayer()
+        stopAllPads()
         if let core { pp_engine_destroy(core) }
         core = nil
         plugins.releaseAll(now: true)
@@ -935,6 +941,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         var next = settings
         guard let verb = w.first else { return Reply(ok: false, text: "no command") }
         let args = w.dropFirst()
+        if let reply = handlePads(verb, Array(args), &next) { return reply }
         switch verb {
         case "status":
             return Reply(ok: true, text: statusText())
@@ -1678,6 +1685,8 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             multitrack on|off | arm strip|bus|out <n> on|off | take [start|stop]   armed strips, in step
             play <file> | play-stop | play-pause on|off | play-seek <seconds> | play-loop on|off
             play-into strip|bus|out <n>   a strip: in place of its device; a bus or output: added in
+            pads | pad <id or name>   plays it, or stops it | pad-stop-all | pads-into strip|bus|out <n>
+            pad-add <file> | pad-remove <id> | pad-set <id> label <text>|gain <dB>|loop on|off | pad-move <id> <steps> | pad-builtin
             virtual-list | virtual-add <slot> out|in <name> | virtual-rename <slot> <name> | virtual-remove <slot>
             """)
         default:
@@ -1723,6 +1732,8 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         snap.takeRunning = recordings.values.contains(where: \.take)
         snap.recordFolder = RecordingFiles.folder.path
         snap.playInto = playTarget() ?? ""
+        snap.padsInto = padsTarget() ?? ""
+        snap.padsPlaying = padPlayers.mapValues { [$0.player.position, $0.player.duration] }
         if let player {
             snap.player = PlayerState(path: player.url.path, paused: player.isPaused, position: player.position,
                                       duration: player.duration)

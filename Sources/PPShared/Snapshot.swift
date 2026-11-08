@@ -81,6 +81,10 @@ public struct Snapshot: Codable, Sendable, Equatable {
     /// The player: the file it's playing (nil when stopped), and where it plays now.
     public var player: PlayerState?
     public var playInto = ""
+    /// The soundboard: the pads playing now (by id: seconds played, length), and the
+    /// strip they play into.
+    public var padsPlaying: [String: [Double]] = [:]
+    public var padsInto = ""
 
     public init() {}
 }

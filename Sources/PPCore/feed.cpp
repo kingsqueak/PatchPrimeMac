@@ -26,11 +26,14 @@ void PPFeed::play(float *left, float *right, int frames, bool replace) noexcept
     std::size_t r = readAt.load(std::memory_order_relaxed);
     const std::size_t w = writeAt.load(std::memory_order_acquire);
     const int have = paused.load(std::memory_order_relaxed) ? 0 : int(std::min<std::size_t>((w - r) / 2, std::size_t(frames)));
+    const float target = gain.load(std::memory_order_relaxed);
+    const float step = (target - gainNow) / float(std::max(frames, 1));
     for (int f = 0; f < frames; ++f) {
         float l = 0.f, rr = 0.f;
         if (f < have) {
-            l = data[r++ & mask];
-            rr = data[r++ & mask];
+            const float g = gainNow + step * float(f);
+            l = data[r++ & mask] * g;
+            rr = data[r++ & mask] * g;
         }
         if (replace) {
             left[f] = l;
@@ -40,6 +43,7 @@ void PPFeed::play(float *left, float *right, int frames, bool replace) noexcept
             right[f] += rr;
         }
     }
+    gainNow = target;
     readAt.store(r, std::memory_order_release);
     played.fetch_add(std::uint64_t(have), std::memory_order_relaxed);
 }
@@ -68,6 +72,8 @@ int pp_feed_write(PPFeed *f, const float *stereo, int frames)
 }
 
 void pp_feed_set_paused(PPFeed *f, int paused) { f->paused.store(paused != 0, std::memory_order_relaxed); }
+
+void pp_feed_set_gain(PPFeed *f, float g) { f->gain.store(std::max(0.f, g), std::memory_order_relaxed); }
 
 void pp_feed_end(PPFeed *f) { f->ended.store(true, std::memory_order_release); }
 

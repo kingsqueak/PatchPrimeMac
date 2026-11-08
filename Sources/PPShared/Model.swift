@@ -108,6 +108,38 @@ public extension Array where Element == EffectSetting {
     }
 }
 
+/// A soundboard pad: a sound file, played into the soundboard's strip.
+public struct SoundPad: Codable, Equatable, Sendable, Identifiable {
+    public var id: String
+    public var label: String
+    public var path: String
+    public var gainDb = 0.0     // its level, -60 to +12
+    public var loop = false     // plays until pressed again
+    public var group = ""       // the soundboard's section: "Crowd", "Drums"...; empty: yours
+
+    public init(id: String, label: String, path: String, group: String = "") {
+        self.id = id
+        self.label = label
+        self.path = path
+        self.group = group
+    }
+
+    enum CodingKeys: String, CodingKey { case id, label, path, gainDb, loop, group }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        label = try c.decode(String.self, forKey: .label)
+        path = try c.decode(String.self, forKey: .path)
+        gainDb = try c.decodeIfPresent(Double.self, forKey: .gainDb) ?? 0
+        loop = try c.decodeIfPresent(Bool.self, forKey: .loop) ?? false
+        group = try c.decodeIfPresent(String.self, forKey: .group) ?? ""
+    }
+}
+
+/// The most pads that play at once.
+public let maxPadsPlaying = 16
+
 /// Effects one strip, bus or output may have, as on Linux.
 public let maxEffects = 8
 
@@ -259,6 +291,11 @@ public struct Settings: Codable, Equatable, Sendable {
     /// whether it plays a file over and over.
     public var playInto = ""
     public var playLoop = false
+    /// The soundboard: its pads, where they play (as playInto), and whether the
+    /// built-in sounds have been put on it (once, the first time).
+    public var pads: [SoundPad] = []
+    public var padsInto = ""
+    public var padsSeeded = false
 
     public static let rates: [Double] = [44100, 48000, 96000, 192000]
     public static let buffers = [32, 64, 128, 256, 512, 1024]
@@ -268,7 +305,7 @@ public struct Settings: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case version, strips, buses, outputs, hardwareOutputEnabled, hardwareLimit, savedRates,
             clockDevice, sampleRate, bufferFrames, deviceBuffers, keepOwnRate, lastScene,
-            cueOutput, cueLevelDb, cuePreFader, pluginFilter, recordFormat, recordProcessed, multitrack, armed, playInto, playLoop
+            cueOutput, cueLevelDb, cuePreFader, pluginFilter, recordFormat, recordProcessed, multitrack, armed, playInto, playLoop, pads, padsInto, padsSeeded
     }
 
     // By hand, so a settings file from an older version loads with defaults for what
@@ -299,6 +336,9 @@ public struct Settings: Codable, Equatable, Sendable {
         armed = try c.decodeIfPresent([String].self, forKey: .armed) ?? d.armed
         playInto = try c.decodeIfPresent(String.self, forKey: .playInto) ?? d.playInto
         playLoop = try c.decodeIfPresent(Bool.self, forKey: .playLoop) ?? d.playLoop
+        pads = try c.decodeIfPresent([SoundPad].self, forKey: .pads) ?? d.pads
+        padsInto = try c.decodeIfPresent(String.self, forKey: .padsInto) ?? d.padsInto
+        padsSeeded = try c.decodeIfPresent(Bool.self, forKey: .padsSeeded) ?? d.padsSeeded
     }
 
     /// The buffer size to ask of a device.

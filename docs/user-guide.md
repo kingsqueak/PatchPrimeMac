@@ -57,7 +57,7 @@ Open PatchPrimeMac (in Applications, or from the menu bar icon). The first time,
 - **Mixer**: every strip, bus and output, with its fader, meter and buttons.
 - **Routing**: a grid of every route, strip and bus down the side, buses and outputs across.
 - **Setup**: the clock, sample rate and buffer size, plugins, adding inputs, buses and outputs, the system defaults and virtual devices.
-- The top bar also has the **Scenes** menu, the **Recordings** button (it opens the Recordings window: the format, multitrack takes, your recordings and the player; it's red while anything records), the **mini window** button, the engine's state, and **Hardware Output**.
+- The top bar also has the **Scenes** menu, the **Recordings** button (a red circle: the Recordings window, with the format, multitrack takes, your recordings and the player; it's filled while anything records), the **Soundboard** button (a grid of squares: the Soundboard window, see [Soundboard](#soundboard)), the **mini window** button, the engine's state, and **Hardware Output**.
 - The **menu bar icon** shows whether the engine is running, opens the mixer (**Open Mixer**, also after you closed its window), and quits the app (the sound carries on).
 
 ## Mixing
@@ -326,6 +326,21 @@ You can't really hear your own voice while you talk, so setting a gate or a comp
 
 Mind what the strip is sent to while you do this: the recording goes wherever the mic goes.
 
+## Soundboard
+
+### Using the soundboard
+
+<!-- keywords: soundboard, pads, jingle, stinger, sound effects, applause, laughter, air horn, siren, drums, rimshot, loop -->
+
+The soundboard plays sounds on cue (applause, a laugh, an air horn, a stinger) into one strip. Open it with the **Soundboard** button in the top bar (the grid of squares).
+
+- **Plays into** at the top chooses the strip: a mix bus your stream or call hears, an output (your headphones, to hear them alone), or Desktop. At first it's your first mix bus.
+- **Click a pad** to play it, and again to stop it. Several can play at once (up to 16). A playing pad is lit, with its progress along the bottom. **Stop All** stops them all.
+- **Right-click a pad** to rename it, set its **Level** (−30 to +12 dB, for that pad), make it **Loop** (it plays until you click it again), move it earlier or later, show its file in Finder, or remove it.
+- **Add Sounds…** adds your own WAV, FLAC, AIFF, MP3 or AAC files, as pads named after the files, under **Yours**.
+- It comes with sounds to start with, in sections: **Crowd** (applause, cheers, ooh-ahh, laughter), **Comedy** (ba-dum-tss, sad trombone, drum roll), **Horns and Sirens** and **Drums**. They're all at the same loudness. They're copied to `~/Music/PatchPrimeMac/Soundboard`; removing a pad leaves its file, and **… → Put Back the Built-in Sounds** puts back any you removed. Where each came from and its licence is in `THIRD-PARTY-NOTICES.txt` in the app; the laughter is by lonemonk on freesound.org (CC BY 3.0), the rest are public domain, CC0, or made for PatchPrimeMac.
+- From a script or a Stream Deck button: `patchprime-ctl pad Applause` (by name), `patchprime-ctl pad-stop-all`.
+
 ## Engine and devices
 
 ### Sample rate and buffer size
@@ -377,13 +392,14 @@ Some devices show up in macOS twice under one name: an input half and an output 
 - `patchprime-ctl scene-load Streaming`.
 - `patchprime-ctl cue strip 0 on`.
 - `patchprime-ctl record bus 0` starts or stops recording a bus; `patchprime-ctl take` starts or stops a multitrack take.
+- `patchprime-ctl pad "Air Horn"` plays a soundboard pad (again to stop it).
 - `patchprime-ctl play-into bus 0`, then `patchprime-ctl play ~/Music/PatchPrimeMac/<file>`; `play-pause on|off`, `play-stop`.
 
 ## Uninstalling
 
 <!-- keywords: uninstall, remove, delete, clean -->
 
-Run **Uninstall PatchPrimeMac** from the DMG (or the uninstaller in the app's Help menu). It asks for your password, then removes everything PatchPrimeMac added: the app, the engine, the driver, its settings in macOS's audio system, its logs, caches and crash reports, and its permissions. The default output and input go back to the devices they were before. You choose whether to keep your settings, presets and scenes.
+Run **Uninstall PatchPrimeMac** from the DMG (or the uninstaller in the app's Help menu). It asks for your password, then removes everything PatchPrimeMac added: the app, the engine, the driver, its settings in macOS's audio system, its logs, caches and crash reports, and its permissions. The default output and input go back to the devices they were before. You choose whether to keep your settings, presets and scenes. Your recordings and the soundboard's sounds in `~/Music/PatchPrimeMac` are yours and stay; delete that folder yourself if you don't want them.
 
 **All sound on the Mac stops for a moment** while macOS's audio system restarts without the driver.
 

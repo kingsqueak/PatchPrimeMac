@@ -58,6 +58,9 @@ engine="$app/Contents/Helpers/PatchPrimeEngine.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$engine/Contents/MacOS"
 cp "$bin/PatchPrimeMac" "$bin/patchprime-ctl" "$app/Contents/MacOS/"
 cp "$bin/PatchPrimeEngine" "$bin/patchprime-scan" "$engine/Contents/MacOS/"
+# The soundboard's built-in sounds (see packaging/sounds/SOURCES.md).
+mkdir -p "$engine/Contents/Resources/Sounds"
+cp packaging/sounds/*.wav "$engine/Contents/Resources/Sounds/"
 cp docs/user-guide.md packaging/uninstall.sh build/release-driver/ppdriver "$app/Contents/Resources/"
 # Debug symbols out: they hold the build machine's paths and aren't needed to run.
 strip -S "$app/Contents/MacOS/"* "$engine/Contents/MacOS/"* "$app/Contents/Resources/ppdriver"
@@ -75,6 +78,9 @@ notices="$out/THIRD-PARTY-NOTICES.txt"
         echo "${part%%|*}"; echo "=============================================================================="; echo
         cat "${part#*|}"
     done
+    echo; echo "=============================================================================="
+    echo "The soundboard's built-in sounds"; echo "=============================================================================="; echo
+    cat packaging/sounds/SOURCES.md
 } > "$notices"
 cp LICENSE "$app/Contents/Resources/LICENSE.txt"
 cp "$notices" "$app/Contents/Resources/"

@@ -65,6 +65,7 @@ struct RecordingsButton: View {
         Button { openWindow(id: "recordings") } label: {
             Label("Recordings", systemImage: recording ? "record.circle.fill" : "record.circle")
                 .foregroundStyle(recording ? Color.red : Color.primary)
+                .labelStyle(.iconOnly)
         }
         .help("Recordings: the format, multitrack takes, your recordings and the player")
     }

@@ -13,6 +13,7 @@ It's the Mac sibling of [Patch Prime](https://github.com/kingsqueak/patch-prime)
 - **Built-in effects** on every strip, bus and output: parametric EQ, compressor, de-esser, expander, multiband compressor, noise gate, noise suppression (RNNoise), ducker, broadcast leveler, safety limiter, reverb, delay and gain, with presets.
 - **Audio Unit plugins**, each hosted out of process so a crashing plugin doesn't take the mix down.
 - **Recording** any strip, bus or output to FLAC, WAV or AAC, mics raw or processed, and multitrack takes that start on the same sample; a **player** that plays recordings into any bus or output, or into a mic's strip in place of the mic, to set up its effects.
+- A **soundboard** of pads that play on cue into any strip, several at once, with sounds to start with: applause, cheers, laughter, horns, sirens, drums and a ba-dum-tss.
 - **Scenes** that save and recall the whole mix, a **mini window**, and a command-line tool (`patchprime-ctl`).
 - **Device handling** that follows a device across reconnects and driver changes, mixes devices on different clocks without drift, and refuses setups that would misbehave rather than going silent.
 

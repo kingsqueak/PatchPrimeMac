@@ -24,6 +24,8 @@ struct PPFeed
     std::atomic<std::size_t> writeAt{0};
     std::atomic<std::size_t> readAt{0};
     std::atomic<bool> paused{false};
+    std::atomic<float> gain{1.f};
+    float gainNow = 1.f; // audio thread: glides to gain
     std::atomic<bool> ended{false}; // nothing more will be queued
     std::atomic<std::uint64_t> played{0};
     // Seeking: the reader asks for what's queued to be dropped, and waits until it is.

@@ -53,13 +53,15 @@ unsigned long long pp_mixer_block(const PPMixer *m);
 // Playback. A feed is stereo audio a reader thread queues (pp_feed_write) and the
 // mixer plays into one strip, bus or output: into a strip in place of its device
 // (so its effects can be set up on a recording), added into a bus or output. Silence
-// where nothing is queued, and while paused (keeping its place). One feed at a time.
+// where nothing is queued, and while paused (keeping its place). Up to PP_MAX_FEEDS at
+// once, each in a slot of its own: the player's and the soundboard's pads.
 typedef struct PPFeed PPFeed;
 PPFeed *pp_feed_create(int capacityFrames);
 void pp_feed_destroy(PPFeed *feed); // once it's off the mixer and the audio thread is past it
 int pp_feed_space(const PPFeed *feed); // frames
 int pp_feed_write(PPFeed *feed, const float *stereo, int frames); // frames queued
 void pp_feed_set_paused(PPFeed *feed, int paused);
+void pp_feed_set_gain(PPFeed *feed, float gain); // linear; 1 as it is
 void pp_feed_end(PPFeed *feed); // nothing more will be queued
 int pp_feed_finished(const PPFeed *feed); // ended, and everything played
 unsigned long long pp_feed_played(const PPFeed *feed); // frames since the last flush
@@ -67,8 +69,10 @@ unsigned long long pp_feed_played(const PPFeed *feed); // frames since the last 
 // pp_feed_flushed says when, for the ticket pp_feed_flush returned.
 unsigned int pp_feed_flush(PPFeed *feed);
 int pp_feed_flushed(const PPFeed *feed, unsigned int ticket);
-// Plays feed into a strip, bus or output (or nothing, with a null feed).
-void pp_mixer_set_feed(PPMixer *m, PPFeed *feed, int kind, int slot);
+// Plays feed into a strip, bus or output (or nothing, with a null feed), in slot
+// `index` (0 to PP_MAX_FEEDS - 1).
+enum { PP_MAX_FEEDS = 17 };
+void pp_mixer_set_feed(PPMixer *m, int index, PPFeed *feed, int kind, int slot);
 
 // Faders, in linear gain. All changes glide over about 10 ms, so nothing clicks.
 void pp_mixer_set_input_gain(PPMixer *m, int input, float gain);
