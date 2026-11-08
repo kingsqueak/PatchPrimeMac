@@ -355,8 +355,12 @@ struct EffectCard: View {
                     if effect.type == "eq" {
                         EqCurve(stage: stage, slot: slot, index: index, effect: effect, rate: model.snapshot.engineRate)
                     }
-                    ForEach(parts.plain) { p in
-                        ParamControl(info: p, value: effect.params[p.name] ?? p.initial, key: key(p)) { send(p, $0) }
+                    if let info, EffectPanel.types.contains(effect.type) {
+                        EffectPanel(effect: effect, info: info, index: index, feed: feed) { send($0, $1) }
+                    } else {
+                        ForEach(parts.plain) { p in
+                            ParamControl(info: p, value: effect.params[p.name] ?? p.initial, key: key(p)) { send(p, $0) }
+                        }
                     }
                     EffectMeterRows(type: effect.type, index: index, feed: feed)
                 }

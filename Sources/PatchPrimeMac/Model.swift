@@ -209,6 +209,13 @@ extension Snapshot {
             EffectSetting(type: "eq", params: ["b1On": 1, "b1Type": 1, "b1Freq": 80, "b2On": 1, "b2Freq": 3500, "b2Gain": 3]),
             EffectSetting(type: "compressor", params: ["amount": 55]),
             EffectSetting(type: "deesser", enabled: false)]
+        // The rest of the built-in effects, for the render's other effects pages.
+        var ducker = EffectSetting(type: "ducker")
+        ducker.key = 0
+        pr30.effects = [EffectSetting(type: "expander"), ducker, EffectSetting(type: "limiter", params: ["ceiling": -3]),
+            EffectSetting(type: "leveler"), EffectSetting(type: "multiband", params: ["x1": 150, "x2": 1500, "x3": 6000])]
+        desktop.effects = [EffectSetting(type: "reverb"), EffectSetting(type: "delay"), EffectSetting(type: "gain"),
+            EffectSetting(type: "denoise")]
         s.settings.strips = [re20, pr30, desktop]
         s.settings.buses[0].outputSends = [Send(to: 0, gain: 1)]
         s.settings.buses[1].outputSends = [Send(to: 1, gain: 1)]

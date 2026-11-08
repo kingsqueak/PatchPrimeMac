@@ -77,7 +77,7 @@ From top to bottom:
 - **★** shows and sets the Mac's default device: green when this strip's device is the default. On a strip apps play into (Desktop), it makes that the default **output**; on an output apps record from (Stream Mic), the default **input**; on hardware, that device. macOS makes a whole device the default, never one channel: two mics on one interface both show it.
 - **Route**: where it goes (see [Routing](#routing)). Outputs have none.
 
-**Scrolling:** the scroll wheel works on faders, sliders and number fields everywhere. Hold **Option** or **Command**, or use a mouse's thumb wheel (or Shift with the wheel), for steps a tenth the size.
+**Scrolling:** the scroll wheel works on faders, sliders, knobs and number fields everywhere. Hold **Option** or **Command**, or use a mouse's thumb wheel (or Shift with the wheel), for steps a tenth the size.
 
 ### Virtual devices and the system defaults
 
@@ -149,14 +149,15 @@ What each effect does and how to set it. Effects run in a chain on a strip, bus 
 
 ### Working with effects
 
-<!-- keywords: chain, insert, bypass, all effects, order, add effect, meters, meter bridge, gain reduction, gr, threshold, slider, spinner -->
+<!-- keywords: chain, insert, bypass, all effects, order, add effect, meters, meter bridge, gain reduction, gr, threshold, knob, graph, curve, slider, spinner -->
 
 Click **FX** on a strip to open its effects. On an input strip the effects come before the fader, so apps recording a bus the strip feeds get the processed sound; on a bus or output they come after the fader.
 
 - **Add Effect** adds an effect at the end of the chain: a built-in one, or **Plugins…** for an Audio Unit (see [Plugins](#plugins-audio-units)). A chain can have up to eight.
 - Effects run top to bottom. Move them with the arrows; remove one with the bin.
 - The **switch** on each effect turns it on or bypasses it, crossfading so it doesn't click. **All effects**, at the top, bypasses every effect at once and brings back the ones that were on.
-- **Sliders**: drag, scroll (Option, Command or the thumb wheel for fine steps), or double-click to reset to the effect's starting value.
+- **Knobs**, grouped by what they do (Detection, Timing, Output and so on): drag up or down, scroll (Option, Command or the thumb wheel for fine steps), or double-click to reset to the effect's starting value. Knobs for a range either side of zero (gain, makeup) fill from the middle. Plugins, the EQ's band table and the multiband compressor's bands keep their sliders and number fields.
+- **A picture of what it does**, beside the knobs: for the gate, expander, compressor and limiter, the level in (across) against the level out (up), with a dot at the level going in now; the ducker's dip over time; the de-esser's band; the leveler's target, window and freeze on a loudness scale, with the loudness now; the reverb's tail; the multiband compressor's four bands, each dropping as it's turned down. The compressor has **One knob** (Amount) or **Full controls**.
 - **Number fields** (the EQ's and multiband's bands): type a value and press Return (`3.5k` works for 3.5 kHz), click the arrows, or scroll.
 - **Meters**, beside each effect's controls, like a console's meter bridge: **IN** and **OUT** for each channel (the light part is the peak, the solid part the average), and **GR**, how much it's turning the sound down (gate, expander, compressor, de-esser, limiter, ducker, multiband). The leveler shows **GAIN**, its boost or cut, and the ducker its **KEY** (the strip it listens to). The scale runs from 0 down to −80 dB, with each meter's peak in dB under it. A line across a meter marks the setting it's compared with: the threshold of the gate, expander and compressor on **IN**, the limiter's ceiling on **IN** and **OUT**, the ducker's threshold on **KEY**; hover over it for the value. Noise suppression also shows its **Voice** and the leveler its **Loudness**. Measuring costs a little, so it only happens while the effects window is open and can be seen (not minimised or covered).
 - **Muted strips cost nothing:** once a mute (or a fader at the bottom) has faded the sound out, its effects stop, and start again clean when you unmute. A chain with a reverb keeps running, so its tail isn't frozen.
@@ -179,7 +180,7 @@ A new EQ is flat: a low shelf at 80 Hz, bells at 250 Hz, 1 kHz, 3 kHz and 6 kHz,
 
 Evens out a voice: loud words are turned down, so the quiet ones can come up. It's one knob, **Amount**: 0 % does nothing, 40 % is a light touch for speech, 100 % is heavy, radio-style. The knob sets the threshold, ratio, attack, release and makeup gain together, so your voice comes out about as loud as it went in, only steadier.
 
-Turn on **Advanced** for the controls themselves: **Threshold**, **Ratio**, **Attack**, **Release** and **Makeup**. They start where the knob was, so nothing jumps.
+Choose **Full controls** for the controls themselves: **Threshold**, **Ratio**, **Attack**, **Release** and **Makeup**. They start where the knob was, so nothing jumps.
 
 ### De-esser
 

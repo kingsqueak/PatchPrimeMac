@@ -85,6 +85,8 @@ struct PatchPrimeMacApp: App {
         save(MiniView {}, "-mini", CGSize(width: 170, height: 520))
         save(HelpView(), "-help", CGSize(width: 900, height: 640))
         save(EffectsEditor(stage: .input, slot: 0, label: "RE20") {}, "-effects", CGSize(width: 720, height: 1400))
+        save(EffectsEditor(stage: .input, slot: 1, label: "PR30") {}, "-effects2", CGSize(width: 720, height: 1700))
+        save(EffectsEditor(stage: .input, slot: 2, label: "Desktop") {}, "-effects3", CGSize(width: 720, height: 1000))
     }
 }
 
