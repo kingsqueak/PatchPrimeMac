@@ -375,10 +375,12 @@ struct SetupView: View {
         Form {
             Section("Clock") {
                 Picker("Clock", selection: Binding(
-                    get: { snap.settings.clockDevice?.name ?? "" },
+                    get: { snap.settings.clockDevice?.uid ?? "" },
                     set: { model.send("clock", $0.isEmpty ? "patchprime" : $0) })) {
                     Text("Patch Prime (recommended)").tag("")
-                    ForEach(snap.devices.filter { $0.transport != "Bluetooth" && $0.transport != "Virtual" }) { Text($0.name).tag($0.name) }
+                    ForEach(snap.devices.filter { $0.transport != "Bluetooth" && $0.transport != "Virtual" }) {
+                        Text($0.label(among: snap.devices)).tag($0.uid)
+                    }
                 }
                 Text(snap.clockText).font(.caption).foregroundStyle(.secondary)
             }
@@ -388,11 +390,12 @@ struct SetupView: View {
                 TextField("Label", text: $name)
                 Picker("Device", selection: $stripDevice) {
                     Text("Choose").tag("")
-                    ForEach(snap.devices.filter { $0.inputs > 0 }) { Text($0.name).tag($0.name) }
+                    ForEach(snap.devices.filter { $0.inputs > 0 }) { Text($0.label(among: snap.devices)).tag($0.uid) }
                 }
                 Stepper("Channel \(channel)", value: $channel, in: 1...64)
                 Button("Add Input") {
-                    model.send("strip-add", name.isEmpty ? stripDevice : name, "device", stripDevice, "\(channel)", "\(channel)")
+                    let device = snap.devices.first { $0.uid == stripDevice }?.name ?? stripDevice
+                    model.send("strip-add", name.isEmpty ? device : name, "device", stripDevice, "\(channel)", "\(channel)")
                     name = ""
                 }
                 .disabled(stripDevice.isEmpty)
@@ -403,9 +406,12 @@ struct SetupView: View {
             Section("Add a hardware output") {
                 Picker("Device", selection: $outDevice) {
                     Text("Choose").tag("")
-                    ForEach(snap.devices.filter { $0.outputs > 0 }) { Text($0.name).tag($0.name) }
+                    ForEach(snap.devices.filter { $0.outputs > 0 }) { Text($0.label(among: snap.devices)).tag($0.uid) }
                 }
-                Button("Add Output") { model.send("out-add", outDevice, "device", outDevice, "1", "2") }
+                Button("Add Output") {
+                    let device = snap.devices.first { $0.uid == outDevice }?.name ?? outDevice
+                    model.send("out-add", device, "device", outDevice, "1", "2")
+                }
                     .disabled(outDevice.isEmpty)
             }
             Section("System defaults") {
@@ -505,7 +511,7 @@ struct AudioSection: View {
                     .font(.caption).foregroundStyle(.orange)
             }
             ForEach(snap.devices.filter { $0.buffer > 0 }) { d in
-                DeviceAudioRow(device: d, settings: s, ask: ask)
+                DeviceAudioRow(device: d, label: d.label(among: snap.devices), settings: s, ask: ask)
             }
         } header: {
             Text("Audio")
@@ -518,6 +524,7 @@ struct AudioSection: View {
 
 struct DeviceAudioRow: View {
     let device: DeviceRow
+    let label: String
     let settings: PPShared.Settings
     let ask: ([String], String) -> Void
 
@@ -530,7 +537,7 @@ struct DeviceAudioRow: View {
         }
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(device.name).bold()
+                Text(label).bold()
                 Spacer()
                 Text("\(AudioSection.khz(device.rate))\(resampled ? ", resampled" : ""), \(device.buffer) frames (\(AudioSection.ms(device.buffer, device.rate)))")
                     .font(.caption).foregroundStyle(resampled ? .orange : .secondary)
@@ -538,15 +545,15 @@ struct DeviceAudioRow: View {
             HStack {
                 Toggle("Keep its own rate", isOn: Binding(
                     get: { keeps },
-                    set: { ask(["device-rate", device.name, $0 ? "own" : "follow"],
-                        $0 ? "Leave \(device.name) at its own rate?" : "Run \(device.name) at the engine's rate?") }))
+                    set: { ask(["device-rate", device.uid, $0 ? "own" : "follow"],
+                        $0 ? "Leave \(label) at its own rate?" : "Run \(label) at the engine's rate?") }))
                     .disabled(!keeps && !device.rates.contains(settings.sampleRate))
                 Spacer()
                 Picker("Buffer", selection: Binding(
                     get: { own ?? 0 },
                     set: { value in
-                        ask(["device-buffer", device.name, value == 0 ? "default" : "\(value)"],
-                            value == 0 ? "Give \(device.name) the engine's buffer size?" : "Give \(device.name) \(value)-frame buffers?")
+                        ask(["device-buffer", device.uid, value == 0 ? "default" : "\(value)"],
+                            value == 0 ? "Give \(label) the engine's buffer size?" : "Give \(label) \(value)-frame buffers?")
                     })) {
                     Text("Same as engine (\(settings.bufferFrames))").tag(0)
                     ForEach(choices, id: \.self) { Text("\($0) frames").tag($0) }
@@ -554,7 +561,7 @@ struct DeviceAudioRow: View {
                 .frame(maxWidth: 260)
             }
             if !device.rates.contains(settings.sampleRate) {
-                Text("\(device.name) can't run at \(AudioSection.khz(settings.sampleRate)), so it's resampled.")
+                Text("\(label) can't run at \(AudioSection.khz(settings.sampleRate)), so it's resampled.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -958,5 +965,16 @@ struct MiniRow: View {
             }
         }
         .help("Double-click the slider for 0 dB; scroll to adjust")
+    }
+}
+
+extension DeviceRow {
+    /// Its name, or, when another device has the same one (macOS splits some USB
+    /// codecs, a radio's say, into an input half and an output half), with its side.
+    func label(among all: [DeviceRow]) -> String {
+        guard all.contains(where: { $0.uid != uid && $0.name == name }) else { return name }
+        if inputs > 0 && outputs == 0 { return "\(name) (input)" }
+        if outputs > 0 && inputs == 0 { return "\(name) (output)" }
+        return name
     }
 }

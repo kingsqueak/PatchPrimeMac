@@ -211,17 +211,47 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         devices.filter { !$0.signature.uid.hasPrefix("PatchPrimeMac.") }.map(\.signature)
     }
 
-    func resolve(_ signature: DeviceSignature) -> AudioDeviceInfo? {
-        guard let match = DeviceSignature.match(signature, in: signatures()) else { return nil }
+    enum Side { case input, output }
+
+    /// A saved device, found again. With a side, only devices with that side are
+    /// looked at (apart from the exact one saved, so a strip saved against the wrong
+    /// half still shows why it's silent): a device macOS splits into an input half
+    /// and an output half with the same name and serial (a radio's USB codec) is then
+    /// found again even when its UIDs change, after it's moved to another port.
+    func resolve(_ signature: DeviceSignature, _ side: Side? = nil) -> AudioDeviceInfo? {
+        let candidates = devices.filter { d in
+            guard !d.signature.uid.hasPrefix("PatchPrimeMac.") else { return false }
+            switch side {
+            case nil: return true
+            case .input: return d.inputs > 0 || d.signature.uid == signature.uid
+            case .output: return d.outputs > 0 || d.signature.uid == signature.uid
+            }
+        }
+        guard let match = DeviceSignature.match(signature, in: candidates.map(\.signature)) else { return nil }
         return devices.first { $0.signature == match }
     }
 
-    func key(_ endpoint: Endpoint) -> String? {
+    /// A device a command names: by its UID, or by its name. A name two devices share
+    /// (the halves of a radio's USB codec) needs a side to tell them apart, or the UID.
+    func named(_ text: String, _ side: Side? = nil) -> (AudioDeviceInfo?, String?) {
+        let real = devices.filter { !$0.signature.uid.hasPrefix("PatchPrimeMac.") }
+        if let exact = real.first(where: { $0.signature.uid == text }) { return (exact, nil) }
+        var same = real.filter { $0.signature.name == text }
+        guard !same.isEmpty else { return (nil, "no device called \"\(text)\"") }
+        if let side { same = same.filter { side == .input ? $0.inputs > 0 : $0.outputs > 0 } }
+        guard !same.isEmpty else { return (nil, "\(text) has no \(side == .input ? "inputs" : "outputs")") }
+        guard same.count == 1 else {
+            return (nil, "\(same.count) devices are called \"\(text)\"; give its UID instead (patchprime-ctl devices lists them)")
+        }
+        return (same[0], nil)
+    }
+
+    func key(_ endpoint: Endpoint, _ side: Side) -> String? {
         switch endpoint {
         case let .virtual(slot):
             return "virtual:\(slot)"
         case let .device(signature, left, right):
-            guard let device = resolve(signature) else { return nil }
+            guard let device = resolve(signature, side) else { return nil }
             return "device:\(device.id):\(left):\(right)"
         }
     }
@@ -234,8 +264,8 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         wiring = []
         for slot in 0..<Int(PP_MAX_INPUTS) {
             let strip = settings.strips.first { $0.slot == slot }
-            var wanted = strip.flatMap { key($0.source) }
-            if let strip, case let .device(signature, _, _) = strip.source, let d = resolve(signature), d.inputs == 0 {
+            var wanted = strip.flatMap { key($0.source, .input) }
+            if let strip, case let .device(signature, _, _) = strip.source, let d = resolve(signature, .input), d.inputs == 0 {
                 // Saved against a device's output half (an older version could do that).
                 wanted = nil
                 wiring.append("\(strip.label) is set to \(d.signature.name)'s output side, which has no inputs. Choose its input side.")
@@ -250,7 +280,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
                         pp_engine_bind_input_virtual(core, Int32(slot), Int32(s))
                         boundInputs[slot] = wanted
                     case let .device(signature, left, right):
-                        if let device = resolve(signature), bindInput(core, slot, device, left, right) {
+                        if let device = resolve(signature, .input), bindInput(core, slot, device, left, right) {
                             boundInputs[slot] = wanted
                             boundSince[slot] = Date()
                             lastSound[slot] = nil
@@ -279,8 +309,8 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         }
         for slot in 0..<Int(PP_MAX_OUTPUTS) {
             let output = settings.outputs.first { $0.slot == slot }
-            var wanted = output.flatMap { key($0.sink) }
-            if let output, case let .device(signature, _, _) = output.sink, let d = resolve(signature), d.outputs == 0 {
+            var wanted = output.flatMap { key($0.sink, .output) }
+            if let output, case let .device(signature, _, _) = output.sink, let d = resolve(signature, .output), d.outputs == 0 {
                 wanted = nil
                 wiring.append("\(output.label) is set to \(d.signature.name)'s input side, which has no outputs. Choose its output side.")
             }
@@ -294,7 +324,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
                         pp_engine_bind_output_virtual(core, Int32(slot), Int32(s))
                         boundOutputs[slot] = wanted
                     case let .device(signature, left, right):
-                        if let device = resolve(signature) {
+                        if let device = resolve(signature, .output) {
                             prepare(device)
                             let saved = settings.savedRates[device.signature.uid] ?? 0
                             if pp_engine_bind_output_device(core, Int32(slot), device.id, Int32(left), Int32(right), -saved) == 0 {
@@ -532,7 +562,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         guard let core else { return }
         var changed = false
         for strip in settings.strips {
-            if case let .device(signature, _, _) = strip.source, let device = resolve(signature),
+            if case let .device(signature, _, _) = strip.source, let device = resolve(signature, .input),
                 settings.clockDevice == nil {
                 let uid = device.signature.uid
                 let ppm = pp_engine_input_ratio_ppm(core, Int32(strip.slot))
@@ -614,7 +644,9 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         var want = 0.0
         var text = "Patch Prime"
         if let wanted = settings.clockDevice {
-            if let device = resolve(wanted) {
+            // A split device moved to another port matches both halves by serial; they
+            // share one clock, so the input half will do.
+            if let device = resolve(wanted) ?? resolve(wanted, .input) {
                 var seconds = 0.0, sample = 0.0
                 if pp_engine_device_clock(core, device.id, &seconds, &sample) == 1 {
                     if let last = clockMarks.last, seconds <= last.0 || sample < last.1 { clockMarks = [] }
@@ -721,7 +753,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         guard w.count == 4, w[0] == "device", let left = Int(w[2]), let right = Int(w[3]) else {
             return (nil, "expected: device <name> <left> <right>, or virtual <slot>. Channels count from 1.")
         }
-        let named = devices.filter { $0.signature.name == w[1] && !$0.signature.uid.hasPrefix("PatchPrimeMac.") }
+        let named = devices.filter { ($0.signature.name == w[1] || $0.signature.uid == w[1]) && !$0.signature.uid.hasPrefix("PatchPrimeMac.") }
         guard !named.isEmpty else { return (nil, "no device called \"\(w[1])\"") }
         guard let device = named.first(where: { input ? $0.inputs > 0 : $0.outputs > 0 }) else {
             return (nil, "\(w[1]) has no \(input ? "inputs" : "outputs")")
@@ -788,7 +820,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             return Reply(ok: true, text: String(data: data, encoding: .utf8) ?? "{}")
         case "devices":
             let lines = devices.filter { !$0.signature.uid.hasPrefix("PatchPrimeMac.") }.map {
-                "\($0.signature.name)  [\($0.signature.transport)]  \($0.inputs) in, \($0.outputs) out, \(Int($0.rate)) Hz" + ($0.signature.serial.isEmpty ? "" : ", serial \($0.signature.serial)")
+                "\($0.signature.name)  [\($0.signature.transport)]  \($0.inputs) in, \($0.outputs) out, \(Int($0.rate)) Hz" + ($0.signature.serial.isEmpty ? "" : ", serial \($0.signature.serial)") + "\n    uid \($0.signature.uid)"
             }
             return Reply(ok: true, text: lines.joined(separator: "\n"))
         case "strip-add" where args.count >= 2:
@@ -891,9 +923,8 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
                 next.clockDevice = nil
                 return commit(next, "clock: Patch Prime")
             }
-            guard let device = devices.first(where: { $0.signature.name == args.first && !$0.signature.uid.hasPrefix("PatchPrimeMac.") }) else {
-                return Reply(ok: false, text: "no device called \"\(args.first!)\"")
-            }
+            let (found, problem) = named(args.first!)
+            guard let device = found else { return Reply(ok: false, text: problem ?? "no such device") }
             if device.signature.transport == "Bluetooth" {
                 return Reply(ok: false, text: "a Bluetooth device's clock isn't steady enough to follow")
             }
@@ -921,10 +952,9 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         case "default-device" where args.count == 2:
             let a = Array(args)
             // The half that fits: a device can show up as an input half and an output half.
-            guard let device = devices.first(where: { $0.signature.name == a[1] && !$0.signature.uid.hasPrefix("PatchPrimeMac.")
-                && (a[0] == "input" ? $0.inputs > 0 : $0.outputs > 0) }) else {
-                return Reply(ok: false, text: "no \(a[0]) device called \"\(a[1])\"")
-            }
+            guard a[0] == "input" || a[0] == "output" else { return Reply(ok: false, text: "default-device input|output <name or UID>") }
+            let (found, problem) = named(a[1], a[0] == "input" ? .input : .output)
+            guard let device = found else { return Reply(ok: false, text: problem ?? "no such device") }
             if a[0] == "input" {
                 return Reply(ok: setDefaultDevice(.input, device.id), text: "done")
             }
@@ -944,9 +974,8 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             return commit(next, "engine restarted with \(frames)-frame buffers")
         case "device-buffer" where args.count == 2, "device-rate" where args.count == 2:
             let a = Array(args)
-            guard let device = devices.first(where: { $0.signature.name == a[0] && !$0.signature.uid.hasPrefix("PatchPrimeMac.") }) else {
-                return Reply(ok: false, text: "no device called \"\(a[0])\"")
-            }
+            let (found, problem) = named(a[0])
+            guard let device = found else { return Reply(ok: false, text: problem ?? "no such device") }
             let uid = device.signature.uid
             if verb == "device-rate" {
                 switch a[1] {
