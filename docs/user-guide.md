@@ -57,7 +57,7 @@ Open PatchPrimeMac (in Applications, or from the menu bar icon). The first time,
 - **Mixer**: every strip, bus and output, with its fader, meter and buttons.
 - **Routing**: a grid of every route, strip and bus down the side, buses and outputs across.
 - **Setup**: the clock, sample rate and buffer size, plugins, adding inputs, buses and outputs, the system defaults and virtual devices.
-- The top bar also has the **Scenes** menu, the **mini window** button, the engine's state, and **Hardware Output**.
+- The top bar also has the **Scenes** menu, the **Recordings** button (it opens the Recordings window: the format, multitrack takes, your recordings and the player; it's red while anything records), the **mini window** button, the engine's state, and **Hardware Output**.
 - The **menu bar icon** shows whether the engine is running, opens the mixer (**Open Mixer**, also after you closed its window), and quits the app (the sound carries on).
 
 ## Mixing
@@ -76,6 +76,7 @@ From top to bottom:
 - **C** cues it: you hear it alone in the cue output (see [Cue](#cue-headphones)). C appears once a cue output is chosen.
 - **★** shows and sets the Mac's default device: green when this strip's device is the default. On a strip apps play into (Desktop), it makes that the default **output**; on an output apps record from (Stream Mic), the default **input**; on hardware, that device. macOS makes a whole device the default, never one channel: two mics on one interface both show it.
 - **Route**: where it goes (see [Routing](#routing)). Outputs have none.
+- **REC** records it to a file; with Multitrack on it reads **ARM** (see [Recording](#recording)).
 
 **Scrolling:** the scroll wheel works on faders, sliders, knobs and number fields everywhere. Hold **Option** or **Command**, or use a mouse's thumb wheel (or Shift with the wheel), for steps a tenth the size.
 
@@ -276,6 +277,55 @@ Besides the built-in effects, any chain can run **Audio Unit** effects: Waves, M
 - **Plugins run apart from the engine.** macOS runs them in a process of its own, so a plugin that crashes can't take your audio down: the affected strip plays without it for a moment while it's loaded again with its settings, and everything else carries on.
 - Each plugin costs what its processing costs, plus a few hundredths of a millisecond for running apart. The built-in effects remain the lightest choice.
 
+## Recording
+
+### Recording a strip
+
+<!-- keywords: record, rec, capture, flac, wav, aac, m4a, raw, processed, music folder, file format -->
+
+Any input, mix bus or output can be recorded to a file. Press **REC** at the bottom of its strip; it turns red and shows the time. Press it again to stop. Several can record at once.
+
+- **What's recorded:** a mix bus or an output records what it sends on, after its effects and fader; so does a strip apps play into (Desktop). A hardware **input** (a microphone) records either **raw**, the sound as the device sends it, before the strip's effects and fader (the default; for processing later, or for tuning its effects), or **processed**, after them, as the mix hears it. Choose with **Inputs** in the Recordings window; it applies at once, also to a recording already running. A mono input records a mono file.
+- **Where:** `~/Music/PatchPrimeMac`, named after the strip and the time: `Mix A 2026-11-08 14-30-07.flac`.
+- **Format:** **FLAC** is lossless at about half the size of WAV; **WAV** is uncompressed; both are 24-bit. **AAC** (.m4a) is small and plays everywhere, up to 48 kHz (at a higher sample rate, choose FLAC or WAV). The format applies to the next recording.
+- **In time:** effects that make the sound a little late (noise suppression by 10 ms, plugins by what they report) are allowed for: a recording after a chain's effects leaves that much off its start and adds as much silence at its end, so it lines up with real time and with the other tracks of a take.
+- The engine does the recording, so it carries on with the window closed. It stops if the engine restarts (a sample rate or buffer change, or macOS's audio system restarting); what was recorded until then is kept.
+
+### Multitrack takes
+
+<!-- keywords: multitrack, take, arm, tracks, audacity, reaper, logic, podcast, sample aligned -->
+
+A take records several strips at once, each to its own file, all starting on the same sample, so they line up as tracks in Logic, Reaper or Audacity: your mic raw, a guest, and the stream mix, say, to fix the levels or the edit afterwards.
+
+1. In the **Recordings** window, turn on **Multitrack**. The strips' **REC** buttons now read **ARM**.
+2. Click **ARM** on each strip you want; armed ones are outlined in red. They stay armed until you click again.
+3. Press **Record Take**. Every armed strip records and shows its time. Press **Stop Take**, or any of its strips' buttons, to stop them all.
+
+Each take gets a folder, `Take 2026-11-08 14-30-00`, with one file per strip named after it: `RE20b.flac`, `Mix A.flac`. For a summed stereo track, arm a mix bus the strips are sent to.
+
+### Your recordings and the player
+
+<!-- keywords: recordings list, playback, play into, loop, seek, finder, trash, delete, open folder -->
+
+The **Recordings** window (the **Recordings** button in the top bar) lists them newest first, with their length, size and when they were made; a take's tracks show its name.
+
+- **Double-click** one, or select it and press play, to play it. The player has play and pause, stop, **loop** (over and over, without a gap), and a position slider: drag it to jump.
+- **Play into** chooses where it plays. A **mix bus** or an **output**: it's added to what's there: into the bus your stream hears, say, or into your headphones' output to listen alone. An **input**: in place of its device (see below). It plays at the mixer's sample rate, whatever the file's.
+- Right-click for **Open in Its Usual App**, **Show in Finder** and **Move to Trash** (from where you can put it back); a take's folder goes when its last track does. **Open Folder** opens the recordings folder.
+
+### Setting up a mic's effects on a recording
+
+<!-- keywords: tune, adjust, effects, loop, playback through effects, test recording -->
+
+You can't really hear your own voice while you talk, so setting a gate or a compressor live is guesswork. Instead:
+
+1. With **Inputs** on **Raw** (the default), press **REC** on the mic's strip, talk for half a minute the way you usually do, and stop.
+2. In the Recordings window, choose the mic in **Play into** ("RE20b (instead of the device)"), turn on **loop**, and play the recording.
+3. While it plays, the strip hears the recording instead of the microphone, through its whole effects chain, fader and sends, exactly as your voice would go.
+4. Open its effects and adjust them while you listen (cue the strip, or listen on an output it's sent to). Stop the player when you're done: the microphone is back at once.
+
+Mind what the strip is sent to while you do this: the recording goes wherever the mic goes.
+
 ## Engine and devices
 
 ### Sample rate and buffer size
@@ -326,6 +376,8 @@ Some devices show up in macOS twice under one name: an input half and an output 
 - `patchprime-ctl mute strip 0 on`, `patchprime-ctl gain out 1 0.5`.
 - `patchprime-ctl scene-load Streaming`.
 - `patchprime-ctl cue strip 0 on`.
+- `patchprime-ctl record bus 0` starts or stops recording a bus; `patchprime-ctl take` starts or stops a multitrack take.
+- `patchprime-ctl play-into bus 0`, then `patchprime-ctl play ~/Music/PatchPrimeMac/<file>`; `play-pause on|off`, `play-stop`.
 
 ## Uninstalling
 

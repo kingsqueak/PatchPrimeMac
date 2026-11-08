@@ -73,8 +73,29 @@ public struct Snapshot: Codable, Sendable, Equatable {
     /// What's cued now: "s0", "b1", "o2".
     public var cued: [String] = []
     public var pluginScan = PluginScanState()
+    /// Recording now: seconds written, by strip ("s0", "b1", "o2"); whether a
+    /// multitrack take is running; and where recordings go.
+    public var recording: [String: Double] = [:]
+    public var takeRunning = false
+    public var recordFolder = ""
+    /// The player: the file it's playing (nil when stopped), and where it plays now.
+    public var player: PlayerState?
+    public var playInto = ""
 
     public init() {}
+}
+
+public struct PlayerState: Codable, Sendable, Equatable {
+    public var path: String
+    public var paused: Bool
+    public var position: Double
+    public var duration: Double
+    public init(path: String, paused: Bool, position: Double, duration: Double) {
+        self.path = path
+        self.paused = paused
+        self.position = position
+        self.duration = duration
+    }
 }
 
 /// Where a plugin scan is.

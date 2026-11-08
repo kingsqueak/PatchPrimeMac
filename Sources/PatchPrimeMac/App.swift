@@ -48,6 +48,10 @@ struct PatchPrimeMacApp: App {
         }
         .defaultSize(width: 720, height: 720)
         .windowResizability(.contentMinSize)
+        Window("Recordings", id: "recordings") {
+            RecordingsView().environmentObject(model)
+        }
+        .defaultSize(width: 760, height: 520)
         Window("PatchPrimeMac Help", id: "help") {
             HelpView()
         }
@@ -82,6 +86,7 @@ struct PatchPrimeMacApp: App {
         save(ContentView(), "-mixer", CGSize(width: 860, height: 560))
         save(RoutingView(), "-routing", CGSize(width: 620, height: 300))
         save(SetupView(), "-setup", CGSize(width: 620, height: 700))
+        save(RecordingsView(), "-recordings", CGSize(width: 860, height: 420))
         save(MiniView {}, "-mini", CGSize(width: 170, height: 520))
         save(HelpView(), "-help", CGSize(width: 900, height: 640))
         save(EffectsEditor(stage: .input, slot: 0, label: "RE20") {}, "-effects", CGSize(width: 720, height: 1400))

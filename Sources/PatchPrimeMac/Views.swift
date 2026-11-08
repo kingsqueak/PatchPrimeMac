@@ -160,6 +160,7 @@ struct StripView: View {
             } else {
                 Color.clear.frame(height: 20) // outputs route nowhere; keep the strips lined up
             }
+            RecordButton(stage: stage, slot: slot)
         }
         .padding(8)
         .frame(width: 92)
@@ -617,6 +618,7 @@ struct ContentView: View {
                 .labelsHidden()
                 .frame(width: 260)
                 SceneMenu()
+                RecordingsButton()
                 Button { setMini(true) } label: { Image(systemName: "rectangle.compress.vertical") }
                     .help("Mini window: every level and mute, one strip wide")
                 Spacer()

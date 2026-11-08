@@ -247,6 +247,18 @@ public struct Settings: Codable, Equatable, Sendable {
     public var cuePreFader = true
     /// What the plugin browser and the scan leave out.
     public var pluginFilter = PluginFilter()
+    /// Recording: the file format ("flac", "wav" or "aac"), whether a hardware input
+    /// records after its effects and fader (processed) or before them (raw), whether
+    /// the record buttons arm strips for a multitrack take, and what's armed ("s0",
+    /// "b1", "o2").
+    public var recordFormat = "flac"
+    public var recordProcessed = false
+    public var multitrack = false
+    public var armed: [String] = []
+    /// The player: where it plays ("s0", "b1", "o2"; empty for the first bus), and
+    /// whether it plays a file over and over.
+    public var playInto = ""
+    public var playLoop = false
 
     public static let rates: [Double] = [44100, 48000, 96000, 192000]
     public static let buffers = [32, 64, 128, 256, 512, 1024]
@@ -256,7 +268,7 @@ public struct Settings: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case version, strips, buses, outputs, hardwareOutputEnabled, hardwareLimit, savedRates,
             clockDevice, sampleRate, bufferFrames, deviceBuffers, keepOwnRate, lastScene,
-            cueOutput, cueLevelDb, cuePreFader, pluginFilter
+            cueOutput, cueLevelDb, cuePreFader, pluginFilter, recordFormat, recordProcessed, multitrack, armed, playInto, playLoop
     }
 
     // By hand, so a settings file from an older version loads with defaults for what
@@ -281,6 +293,12 @@ public struct Settings: Codable, Equatable, Sendable {
         cueLevelDb = try c.decodeIfPresent(Double.self, forKey: .cueLevelDb) ?? d.cueLevelDb
         cuePreFader = try c.decodeIfPresent(Bool.self, forKey: .cuePreFader) ?? d.cuePreFader
         pluginFilter = try c.decodeIfPresent(PluginFilter.self, forKey: .pluginFilter) ?? d.pluginFilter
+        recordFormat = try c.decodeIfPresent(String.self, forKey: .recordFormat) ?? d.recordFormat
+        recordProcessed = try c.decodeIfPresent(Bool.self, forKey: .recordProcessed) ?? d.recordProcessed
+        multitrack = try c.decodeIfPresent(Bool.self, forKey: .multitrack) ?? d.multitrack
+        armed = try c.decodeIfPresent([String].self, forKey: .armed) ?? d.armed
+        playInto = try c.decodeIfPresent(String.self, forKey: .playInto) ?? d.playInto
+        playLoop = try c.decodeIfPresent(Bool.self, forKey: .playLoop) ?? d.playLoop
     }
 
     /// The buffer size to ask of a device.

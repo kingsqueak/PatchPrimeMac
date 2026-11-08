@@ -6,6 +6,8 @@
 // no swaps, and the audio thread never waits. Each gain glides to its target
 // across a block; the work per block follows the routes in use, not the table size.
 
+#include "feed.h"
+#include "tap.h"
 #include "ppcore.h"
 #include "ppdsp.h"
 
@@ -151,6 +153,56 @@ struct PPMixer
     std::array<PPFx *, PP_MAX_OUTPUTS> outputFx{};
     // The safety limiter on outputs that reach hardware, after the user's effects.
     std::array<PPFx *, PP_MAX_OUTPUTS> safetyFx{};
+
+    // Recording taps (see ppcore.h), and the blocks processed so far.
+    std::array<std::atomic<PPTap *>, PP_MAX_INPUTS> inputTap{};
+    std::array<std::atomic<PPTap *>, PP_MAX_BUSES> busTap{};
+    std::array<std::atomic<PPTap *>, PP_MAX_OUTPUTS> outputTap{};
+    std::atomic<unsigned long long> block{0};
+    // The player: its feed and where it plays (kind * 64 + slot, so both change at once).
+    std::atomic<PPFeed *> feed{nullptr};
+    std::atomic<int> feedTarget{-1};
+
+    // [RT] The player into this one, if it plays here.
+    void playFeed(int kind, int slot, Stereo &audio, int frames, bool replace)
+    {
+        PPFeed *f = feed.load(std::memory_order_acquire);
+        if (f && feedTarget.load(std::memory_order_relaxed) == kind * 64 + slot) {
+            f->play(audio.left, audio.right, frames, replace);
+        }
+    }
+
+    std::atomic<PPTap *> *tapFor(int kind, int slot)
+    {
+        switch (kind) {
+        case PP_KIND_STRIP: return slot >= 0 && slot < PP_MAX_INPUTS ? &inputTap[size_t(slot)] : nullptr;
+        case PP_KIND_BUS: return slot >= 0 && slot < PP_MAX_BUSES ? &busTap[size_t(slot)] : nullptr;
+        case PP_KIND_OUTPUT: return slot >= 0 && slot < PP_MAX_OUTPUTS ? &outputTap[size_t(slot)] : nullptr;
+        default: return nullptr;
+        }
+    }
+
+    // [RT] Into a tap, if one is attached (and, for a strip, at this point).
+    static void tap(std::atomic<PPTap *> &slot, const Stereo &audio, int frames, unsigned long long block,
+                    int point = -1)
+    {
+        PPTap *t = slot.load(std::memory_order_acquire);
+        if (!t || (point >= 0 && t->processed.load(std::memory_order_relaxed) != (point == 1))) {
+            return;
+        }
+        t->push(audio.left, audio.right, frames, block);
+    }
+
+    // [RT] Taps whose stop has come are finished, whether or not their strip ran.
+    static void finishTaps(std::atomic<PPTap *> *taps, int count, unsigned long long block)
+    {
+        for (int i = 0; i < count; ++i) {
+            PPTap *t = taps[i].load(std::memory_order_acquire);
+            if (t && block >= t->stop.load(std::memory_order_acquire)) {
+                t->finished.store(true, std::memory_order_release);
+            }
+        }
+    }
 
     // Keys: the input strip whose sound (after its effects and fader, in mono) a
     // chain's ducker listens to, or -1. Inputs run in an order where a key comes before
@@ -479,12 +531,41 @@ float *pp_mixer_input_right(PPMixer *m, int i) { return m->inputs[size_t(i)].aud
 const float *pp_mixer_output_left(const PPMixer *m, int o) { return m->outputs[size_t(o)].audio.left; }
 const float *pp_mixer_output_right(const PPMixer *m, int o) { return m->outputs[size_t(o)].audio.right; }
 
+int pp_mixer_attach_tap(PPMixer *m, int kind, int slot, PPTap *tap)
+{
+    auto *at = m->tapFor(kind, slot);
+    if (!at || !tap) {
+        return -1;
+    }
+    PPTap *none = nullptr;
+    return at->compare_exchange_strong(none, tap, std::memory_order_acq_rel) ? 0 : -1;
+}
+
+void pp_mixer_detach_tap(PPMixer *m, int kind, int slot)
+{
+    if (auto *at = m->tapFor(kind, slot)) {
+        at->store(nullptr, std::memory_order_release);
+    }
+}
+
+unsigned long long pp_mixer_block(const PPMixer *m) { return m->block.load(std::memory_order_acquire); }
+
+void pp_mixer_set_feed(PPMixer *m, PPFeed *feed, int kind, int slot)
+{
+    m->feedTarget.store(feed ? kind * 64 + slot : -1, std::memory_order_relaxed);
+    m->feed.store(feed, std::memory_order_release);
+}
+
 void pp_mixer_process(PPMixer *m, int frames)
 {
     frames = std::clamp(frames, 0, int(PP_MAX_BLOCK));
     if (frames == 0) {
         return;
     }
+    const unsigned long long block = m->block.load(std::memory_order_relaxed);
+    PPMixer::finishTaps(m->inputTap.data(), PP_MAX_INPUTS, block);
+    PPMixer::finishTaps(m->busTap.data(), PP_MAX_BUSES, block);
+    PPMixer::finishTaps(m->outputTap.data(), PP_MAX_OUTPUTS, block);
     for (int b = 0; b < PP_MAX_BUSES; ++b) {
         if (m->buses[size_t(b)].active.load(std::memory_order_relaxed)) {
             m->buses[size_t(b)].audio.clear(frames);
@@ -514,6 +595,8 @@ void pp_mixer_process(PPMixer *m, int frames)
             continue;
         }
         in.updateTarget();
+        m->playFeed(PP_KIND_STRIP, i, in.audio, frames, true); // the player, in place of the device
+        PPMixer::tap(m->inputTap[size_t(i)], in.audio, frames, block, 0); // raw: before its effects
         auto &cueSend = m->cueSendInput[size_t(i)];
         const bool cued = PPMixer::cueOn(cueSend, m->cueInput[size_t(i)], cueing);
         if (!PPMixer::asleep(in, m->inputFx[size_t(i)], cued && pre)) {
@@ -528,6 +611,7 @@ void pp_mixer_process(PPMixer *m, int frames)
             m->addCue(cueSend, in.audio, frames);
         }
         PPMixer::measure(in, frames);
+        PPMixer::tap(m->inputTap[size_t(i)], in.audio, frames, block, 1); // processed
         // This strip as a key for others: mono, after its effects and fader.
         for (int f = 0; f < frames; ++f) {
             m->keyAudio[i][f] = 0.5f * (in.audio.left[f] + in.audio.right[f]);
@@ -549,6 +633,7 @@ void pp_mixer_process(PPMixer *m, int frames)
         if (!bus.active.load(std::memory_order_relaxed)) {
             continue;
         }
+        m->playFeed(PP_KIND_BUS, b, bus.audio, frames, false);
         auto &busSend = m->cueSendBus[size_t(b)];
         const bool busCued = PPMixer::cueOn(busSend, m->cueBus[size_t(b)], cueing);
         if (busCued && pre) {
@@ -563,6 +648,7 @@ void pp_mixer_process(PPMixer *m, int frames)
             m->addCue(busSend, bus.audio, frames);
         }
         PPMixer::measure(bus, frames);
+        PPMixer::tap(m->busTap[size_t(b)], bus.audio, frames, block);
         for (int o = 0; o < PP_MAX_OUTPUTS; ++o) {
             if (m->outputs[size_t(o)].active.load(std::memory_order_relaxed)) {
                 m->send(m->busToOutput[b][o], bus.audio, m->outputs[size_t(o)].audio, frames);
@@ -579,6 +665,7 @@ void pp_mixer_process(PPMixer *m, int frames)
         if (!out.active.load(std::memory_order_relaxed)) {
             continue;
         }
+        m->playFeed(PP_KIND_OUTPUT, o, out.audio, frames, false);
         auto &outSend = m->cueSendOut[size_t(o)];
         const bool outCued = o != cueTo && PPMixer::cueOn(outSend, m->cueOut[size_t(o)], cueing);
         if (outCued && pre) {
@@ -608,6 +695,7 @@ void pp_mixer_process(PPMixer *m, int frames)
                 addRamp(out.audio.right, m->cueMix.right, frames, blendFrom * gainFrom, blendTo * gainTo);
                 pp_fx_process(m->safetyFx[size_t(o)], out.audio.left, out.audio.right, frames);
                 PPMixer::measure(out, frames);
+                PPMixer::tap(m->outputTap[size_t(o)], out.audio, frames, block);
                 continue;
             }
         }
@@ -615,7 +703,9 @@ void pp_mixer_process(PPMixer *m, int frames)
             pp_fx_process(m->safetyFx[size_t(o)], out.audio.left, out.audio.right, frames);
         }
         PPMixer::measure(out, frames);
+        PPMixer::tap(m->outputTap[size_t(o)], out.audio, frames, block);
     }
+    m->block.store(block + 1, std::memory_order_release);
 }
 
 PPMeter pp_mixer_read_input_meter(PPMixer *m, int i) { return m->inputs[size_t(i)].meter.read(); }

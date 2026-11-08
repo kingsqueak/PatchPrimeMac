@@ -239,6 +239,10 @@ extension Snapshot {
         s.settings.cueOutput = 1
         s.cued = ["s0"]
         s.settings.lastScene = "Streaming"
+        s.recording = ["b0": 83]
+        s.player = PlayerState(path: "/tmp/RE20 2026-11-08 14-30-07.flac", paused: false, position: 42, duration: 185)
+        s.playInto = "s0"
+        s.settings.armed = ["s1"]
         s.builtInChains = BuiltInChains.names
         s.chainPresets = ["RE20 streaming"]
         s.effectPresets = ["compressor": ["Gentle"]]

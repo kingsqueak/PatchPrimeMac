@@ -31,6 +31,10 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     var pendingRestart: DispatchWorkItem?
     var engineRate = 0.0
     var engineBlock = 0
+    // Recordings being written, by "s0", "b1", "o2"; whether those of a take are.
+    var recordings: [String: Recording] = [:]
+    var recordNote: String?
+    var player: Player?
     // The built-in effects, and the chains last given to the mixer, by "s0", "b1", "o2",
     // so only a real change reaches it.
     let catalog: [EffectInfo] = {
@@ -95,7 +99,10 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         meterTimer.setEventHandler { [weak self] in self?.updateMeters() }
         meterTimer.resume()
         clockTimer.schedule(deadline: .now(), repeating: 0.25)
-        clockTimer.setEventHandler { [weak self] in self?.steerClock() }
+        clockTimer.setEventHandler { [weak self] in
+            self?.steerClock()
+            if let player = self?.player, player.finished { self?.stopPlayer() } // played to the end
+        }
         clockTimer.resume()
         signal(SIGTERM, SIG_IGN)
         signalSource.setEventHandler { [weak self] in self?.shutDown() }
@@ -130,6 +137,15 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     func restartCore() {
         pendingRestart?.cancel()
         pendingRestart = nil
+        if core != nil, !recordings.isEmpty {
+            // The mixer they tap is going: what was recorded until now is kept.
+            for rec in recordings.values {
+                rec.attached = false
+                pp_tap_end(rec.tap)
+            }
+            recordNote = "Recording stopped: the engine restarted (a sample rate or buffer change, or macOS's audio system). What was recorded until then is kept."
+        }
+        stopPlayer() // its feed is the old mixer's, at the old rate
         if let core { pp_engine_destroy(core) }
         core = nil
         plugins.releaseAll(now: true) // no audio thread has them now
@@ -260,6 +276,10 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     /// audio only where something differs.
     func apply() {
         guard let core, let mixer = pp_engine_mixer(core) else { return }
+        // A strip, bus or output that's gone stops recording.
+        let gone = recordings.keys.filter { label(of: $0) == nil }
+        if !gone.isEmpty { stopRecording(gone) }
+        retargetPlayer()
         offline = []
         wiring = []
         for slot in 0..<Int(PP_MAX_INPUTS) {
@@ -502,6 +522,140 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     }
 
     /// "s0", "b1", "o2" to the mixer's kind and slot.
+    // MARK: Recording
+
+    /// A strip's, bus's or output's name, by "s0", "b1", "o2", if it's there.
+    func label(of key: String) -> String? {
+        guard let (kind, slot) = chainAddress(key) else { return nil }
+        switch Int(kind) {
+        case Int(PP_KIND_STRIP): return settings.strips.first { $0.slot == slot }?.label
+        case Int(PP_KIND_BUS): return settings.buses.first { $0.slot == slot }?.label
+        default: return settings.outputs.first { $0.slot == slot }?.label
+        }
+    }
+
+    /// Whether a strip's recording is after its effects and fader: a hardware input's
+    /// as chosen; a virtual one's (Desktop), a bus's and an output's always.
+    func recordsProcessed(_ key: String) -> Bool {
+        guard key.hasPrefix("s"), let slot = Int(key.dropFirst()),
+              let strip = settings.strips.first(where: { $0.slot == slot }) else { return true }
+        if case .device = strip.source { return settings.recordProcessed }
+        return true
+    }
+
+    /// Starts recording these, together: one file each, all from the same sample. A
+    /// take puts them in a folder of their own.
+    func startRecording(_ keys: [String], take: Bool) -> Reply {
+        guard let core, let mixer = pp_engine_mixer(core), engineRate > 0 else {
+            return Reply(ok: false, text: "the engine isn't running")
+        }
+        let format = RecordingFormat(rawValue: settings.recordFormat) ?? .flac
+        guard format.allows(rate: engineRate) else {
+            return Reply(ok: false, text: "AAC goes up to 48 kHz; the mixer runs at \(Int(engineRate / 1000)) kHz. Choose FLAC or WAV.")
+        }
+        let keys = keys.filter { recordings[$0] == nil && label(of: $0) != nil }
+        guard !keys.isEmpty else { return Reply(ok: false, text: take ? "nothing armed to record" : "nothing to record") }
+        let now = Date()
+        var folder = RecordingFiles.folder
+        if take {
+            folder = RecordingFiles.unique(folder.appendingPathComponent("Take \(RecordingFiles.stamp(now))", isDirectory: true))
+        }
+        let start = pp_mixer_block(mixer) + 2 // the same block for every track
+        var started: [String] = []
+        for key in keys {
+            guard let (kind, slot) = chainAddress(key), let name = label(of: key) else { continue }
+            var mono = false
+            if kind == Int32(PP_KIND_STRIP), let strip = settings.strips.first(where: { $0.slot == slot }),
+               case let .device(_, left, right) = strip.source {
+                mono = left == right
+            }
+            let processed = recordsProcessed(key)
+            let latency = processed ? Int(pp_fx_latency(pp_mixer_effects(mixer, kind, Int32(slot)))) : 0
+            let fileName = take ? "\(RecordingFiles.stem(name)).\(format.fileExtension)"
+                                : "\(RecordingFiles.stem(name)) \(RecordingFiles.stamp(now)).\(format.fileExtension)"
+            let url = RecordingFiles.unique(folder.appendingPathComponent(fileName))
+            guard let tap = pp_tap_create(mono ? 1 : 2, Int32(min(engineRate * 4, Double(1 << 20)))) else { continue }
+            pp_tap_set_processed(tap, processed ? 1 : 0)
+            pp_tap_set_window(tap, start, UInt64.max)
+            guard pp_mixer_attach_tap(mixer, kind, Int32(slot), tap) == 0 else {
+                pp_tap_destroy(tap)
+                continue
+            }
+            let rec = Recording(key: key, tap: tap, url: url, take: take, format: format, rate: engineRate, latency: latency)
+            recordings[key] = rec
+            rec.start { [weak self] in self?.finished($0) }
+            started.append(key)
+        }
+        recordNote = nil
+        return started.isEmpty ? Reply(ok: false, text: "couldn't start recording")
+                               : Reply(ok: true, text: "recording \(started.joined(separator: " "))")
+    }
+
+    /// Stops these recordings on the same block.
+    func stopRecording(_ keys: [String]) {
+        let block = core.flatMap { pp_engine_mixer($0) }.map { pp_mixer_block($0) + 1 } ?? 0
+        for key in keys {
+            guard let rec = recordings[key] else { continue }
+            if block == 0 || !rec.attached { pp_tap_end(rec.tap) } else { rec.stop(atBlock: block) }
+        }
+    }
+
+    /// A recording's file is closed: let its tap go once the audio thread is past it.
+    func finished(_ rec: Recording) {
+        if recordings[rec.key] === rec { recordings[rec.key] = nil }
+        if let error = rec.error { recordNote = "Recording \(rec.url.lastPathComponent): \(error)" }
+        if pp_tap_dropped(rec.tap) > 0 {
+            recordNote = "\(rec.url.lastPathComponent) lost \(pp_tap_dropped(rec.tap)) frames: the disk couldn't keep up."
+        }
+        let tap = rec.tap
+        if rec.attached, let core, let mixer = pp_engine_mixer(core), let (kind, slot) = chainAddress(rec.key) {
+            pp_mixer_detach_tap(mixer, kind, Int32(slot))
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { pp_tap_destroy(tap) }
+    }
+
+    // MARK: Player
+
+    /// Where the player plays: the chosen strip, bus or output, or the first bus (or
+    /// output) when that's gone or none was chosen.
+    func playTarget() -> String? {
+        if !settings.playInto.isEmpty, label(of: settings.playInto) != nil { return settings.playInto }
+        if let bus = settings.buses.first { return "b\(bus.slot)" }
+        return settings.outputs.first.map { "o\($0.slot)" }
+    }
+
+    func play(_ path: String) -> Reply {
+        stopPlayer()
+        guard let core, let mixer = pp_engine_mixer(core), engineRate > 0 else {
+            return Reply(ok: false, text: "the engine isn't running")
+        }
+        guard let target = playTarget(), let (kind, slot) = chainAddress(target) else {
+            return Reply(ok: false, text: "there's nothing to play into: add a mix bus or an output")
+        }
+        let (opened, problem) = Player.open(URL(fileURLWithPath: path), rate: engineRate)
+        guard let opened else { return Reply(ok: false, text: problem ?? "couldn't play that") }
+        player = opened
+        opened.start(looping: settings.playLoop)
+        pp_mixer_set_feed(mixer, opened.feed, kind, Int32(slot))
+        return Reply(ok: true, text: "playing into \(label(of: target) ?? target)")
+    }
+
+    func stopPlayer() {
+        guard let player else { return }
+        self.player = nil
+        if let core, let mixer = pp_engine_mixer(core) { pp_mixer_set_feed(mixer, nil, 0, 0) }
+        player.stop()
+        let feed = player.feed
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { pp_feed_destroy(feed) } // the audio thread is past it
+    }
+
+    /// Points the player at its target again (after the target changed).
+    func retargetPlayer() {
+        guard let player, let core, let mixer = pp_engine_mixer(core) else { return }
+        guard let target = playTarget(), let (kind, slot) = chainAddress(target) else { stopPlayer(); return }
+        pp_mixer_set_feed(mixer, player.feed, kind, Int32(slot))
+    }
+
     func chainAddress(_ key: String) -> (Int32, Int)? {
         guard let first = key.first, let slot = Int(key.dropFirst()) else { return nil }
         switch first {
@@ -698,6 +852,14 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     func shutDown() {
         captureStates()
         pendingSave?.perform()
+        // Recordings get their files finished, so they open (a FLAC or AAC file cut off
+        // part way may not).
+        for rec in recordings.values { pp_tap_end(rec.tap) }
+        let asked = Date()
+        while recordings.values.contains(where: { !$0.isClosed }), Date().timeIntervalSince(asked) < 3 {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        stopPlayer()
         if let core { pp_engine_destroy(core) }
         core = nil
         plugins.releaseAll(now: true)
@@ -815,6 +977,78 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             default: return Reply(ok: false, text: "move strip|bus|out <slot> <steps>")
             }
             return found ? commit(next, "done") : Reply(ok: false, text: "no \(a[0]) \(slot)")
+        case "record" where args.count == 2:
+            // record strip|bus|out <slot>: starts or stops recording it alone; stopping
+            // a take's track stops the whole take.
+            let a = Array(args)
+            let prefix = ["strip": "s", "bus": "b", "out": "o"][a[0]] ?? ""
+            guard !prefix.isEmpty, let slot = Int(a[1]) else { break }
+            let key = prefix + "\(slot)"
+            if let rec = recordings[key] {
+                stopRecording(rec.take ? recordings.values.filter(\.take).map(\.key) : [key])
+                return Reply(ok: true, text: "stopping")
+            }
+            return startRecording([key], take: false)
+        case "take" where args.count <= 1:
+            // take [start|stop]: records every armed strip together, or stops the take.
+            let takeKeys = recordings.values.filter(\.take).map(\.key)
+            if !takeKeys.isEmpty, args.first != "start" {
+                stopRecording(takeKeys)
+                return Reply(ok: true, text: "stopping the take")
+            }
+            guard takeKeys.isEmpty, args.first != "stop" else { return Reply(ok: true, text: "done") }
+            return startRecording(settings.armed, take: true)
+        case "arm" where args.count == 3:
+            let a = Array(args)
+            let prefix = ["strip": "s", "bus": "b", "out": "o"][a[0]] ?? ""
+            guard !prefix.isEmpty, let slot = Int(a[1]), a[2] == "on" || a[2] == "off" else { break }
+            let key = prefix + "\(slot)"
+            next.armed.removeAll { $0 == key }
+            if a[2] == "on" { next.armed.append(key) }
+            return commit(next, "done")
+        case "multitrack" where args.count == 1:
+            guard args.first == "on" || args.first == "off" else { break }
+            next.multitrack = args.first == "on"
+            return commit(next, "done")
+        case "play" where args.count >= 1:
+            return play(args.joined(separator: " "))
+        case "play-stop":
+            stopPlayer()
+            return Reply(ok: true, text: "stopped")
+        case "play-pause" where args.count == 1:
+            guard let player, args.first == "on" || args.first == "off" else { return Reply(ok: false, text: "nothing is playing") }
+            player.setPaused(args.first == "on")
+            return Reply(ok: true, text: "done")
+        case "play-seek" where args.count == 1:
+            guard let player, let seconds = Double(args.first!) else { return Reply(ok: false, text: "nothing is playing") }
+            player.seek(seconds)
+            return Reply(ok: true, text: "done")
+        case "play-loop" where args.count == 1:
+            guard args.first == "on" || args.first == "off" else { break }
+            next.playLoop = args.first == "on"
+            player?.setLooping(next.playLoop)
+            return commit(next, "done")
+        case "play-into" where args.count == 2:
+            let a = Array(args)
+            let prefix = ["strip": "s", "bus": "b", "out": "o"][a[0]] ?? ""
+            guard !prefix.isEmpty, let slot = Int(a[1]), label(of: prefix + "\(slot)") != nil else {
+                return Reply(ok: false, text: "play-into strip|bus|out <n>")
+            }
+            next.playInto = prefix + "\(slot)"
+            let reply = commit(next, "done")
+            retargetPlayer()
+            return reply
+        case "record-format" where args.count == 1:
+            guard let format = RecordingFormat(rawValue: args.first!) else { return Reply(ok: false, text: "record-format flac|wav|aac") }
+            next.recordFormat = format.rawValue
+            return commit(next, "done; the next recording is \(format.rawValue.uppercased())")
+        case "record-inputs" where args.count == 1:
+            guard args.first == "raw" || args.first == "processed" else { return Reply(ok: false, text: "record-inputs raw|processed") }
+            next.recordProcessed = args.first == "processed"
+            let reply = commit(next, "done")
+            // At once, also for a recording already running.
+            for rec in recordings.values { pp_tap_set_processed(rec.tap, recordsProcessed(rec.key) ? 1 : 0) }
+            return reply
         case "state":
             let data = (try? JSONEncoder().encode(settings)) ?? Data()
             return Reply(ok: true, text: String(data: data, encoding: .utf8) ?? "{}")
@@ -1421,9 +1655,9 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             bus-add <label>
             route strip <n> bus <n> <gain> | route strip <n> out <n> <gain> | route bus <n> out <n> <gain>
             gain strip|bus|out <n> <linear> | mute strip|bus|out <n> on|off
-            clock patchprime | clock <device name>
+            clock patchprime | clock <device name or UID>
             rate 44100|48000|96000|192000 | buffer 32|64|128|256|512|1024
-            device-buffer <name> <frames>|default | device-rate <name> follow|own
+            device-buffer <name or UID> <frames>|default | device-rate <name or UID> follow|own
             effects-catalog | fx-list strip|bus|out <n>
             fx-add strip|bus|out <n> <type> [position] | fx-remove ... <i> | fx-move ... <from> <to>
             fx-set strip|bus|out <n> <i> <param> <value> | fx-on strip|bus|out <n> <i> on|off
@@ -1437,8 +1671,13 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             fx-preset-save|fx-preset-load strip|bus|out <n> <i> <name> | fx-preset-delete <type> <name>
             fx-add-plugin strip|bus|out <n> <plugin id> [position]   an AU, the version that fits
             fx-window strip|bus|out <n> <i> open|close   the plugin's own window
-            default output|input <virtual slot> | default-device output|input <device name>
-            strip-remove <n> | bus-remove <n> | out-remove <n>
+            default output|input <virtual slot> | default-device output|input <device name or UID>
+            strip-remove <n> | bus-remove <n> | out-remove <n> | move strip|bus|out <n> <steps>
+            record strip|bus|out <n>   start or stop recording it to a file
+            record-format flac|wav|aac | record-inputs raw|processed
+            multitrack on|off | arm strip|bus|out <n> on|off | take [start|stop]   armed strips, in step
+            play <file> | play-stop | play-pause on|off | play-seek <seconds> | play-loop on|off
+            play-into strip|bus|out <n>   a strip: in place of its device; a bus or output: added in
             virtual-list | virtual-add <slot> out|in <name> | virtual-rename <slot> <name> | virtual-remove <slot>
             """)
         default:
@@ -1451,7 +1690,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         var snap = Snapshot()
         snap.running = core != nil
         snap.engineStarted = startedAt
-        snap.note = ([note].compactMap { $0 } + wiring + pluginNotes).joined(separator: "\n").nilIfEmpty
+        snap.note = ([note, recordNote].compactMap { $0 } + wiring + pluginNotes).joined(separator: "\n").nilIfEmpty
         snap.settings = settings
         snap.offline = Array(offline)
         snap.devices = devices.filter { !$0.signature.uid.hasPrefix("PatchPrimeMac.") }.map { d in
@@ -1480,6 +1719,14 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         snap.builtInChains = BuiltInChains.names
         snap.effectPresets = presets.effectNames
         snap.engineRate = engineRate
+        snap.recording = recordings.mapValues(\.seconds)
+        snap.takeRunning = recordings.values.contains(where: \.take)
+        snap.recordFolder = RecordingFiles.folder.path
+        snap.playInto = playTarget() ?? ""
+        if let player {
+            snap.player = PlayerState(path: player.url.path, paused: player.isPaused, position: player.position,
+                                      duration: player.duration)
+        }
         snap.engineBlock = engineBlock
         snap.virtuals = driverList().split(separator: "\n").compactMap { line in
             let parts = line.split(separator: "\t", maxSplits: 2).map(String.init)

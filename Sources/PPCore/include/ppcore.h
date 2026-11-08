@@ -28,6 +28,48 @@ enum { PP_KIND_STRIP = 0, PP_KIND_BUS = 1, PP_KIND_OUTPUT = 2 };
 PPMixer *pp_mixer_create(double sampleRate);
 void pp_mixer_destroy(PPMixer *mixer);
 
+// Recording. A tap takes a copy of one strip's, bus's or output's sound, block by
+// block, into a lock-free queue that a writer thread empties with pp_tap_read. A
+// strip's tap takes its sound before its effects (raw) or after its effects and
+// fader (processed); a bus's or output's, after its effects. A tap records the
+// blocks from its window's start until its stop (not included), so taps given the
+// same window start on the same sample. Blocks are counted by pp_mixer_block.
+typedef struct PPTap PPTap;
+PPTap *pp_tap_create(int channels, int capacityFrames); // channels 1 (the left) or 2
+void pp_tap_destroy(PPTap *tap); // once it's detached and the audio thread is past it
+void pp_tap_set_window(PPTap *tap, unsigned long long startBlock, unsigned long long stopBlock);
+void pp_tap_stop_at(PPTap *tap, unsigned long long stopBlock);
+void pp_tap_set_processed(PPTap *tap, int processed);
+void pp_tap_end(PPTap *tap); // the mixer is gone: nothing more will come
+int pp_tap_channels(const PPTap *tap);
+int pp_tap_read(PPTap *tap, float *interleaved, int maxFrames); // frames read
+int pp_tap_finished(const PPTap *tap); // past its stop, and everything read
+unsigned long long pp_tap_dropped(const PPTap *tap); // frames lost to a slow disk
+// One tap per strip, bus or output. Returns 0, or -1 if one is attached already.
+int pp_mixer_attach_tap(PPMixer *m, int kind, int slot, PPTap *tap);
+void pp_mixer_detach_tap(PPMixer *m, int kind, int slot);
+unsigned long long pp_mixer_block(const PPMixer *m);
+
+// Playback. A feed is stereo audio a reader thread queues (pp_feed_write) and the
+// mixer plays into one strip, bus or output: into a strip in place of its device
+// (so its effects can be set up on a recording), added into a bus or output. Silence
+// where nothing is queued, and while paused (keeping its place). One feed at a time.
+typedef struct PPFeed PPFeed;
+PPFeed *pp_feed_create(int capacityFrames);
+void pp_feed_destroy(PPFeed *feed); // once it's off the mixer and the audio thread is past it
+int pp_feed_space(const PPFeed *feed); // frames
+int pp_feed_write(PPFeed *feed, const float *stereo, int frames); // frames queued
+void pp_feed_set_paused(PPFeed *feed, int paused);
+void pp_feed_end(PPFeed *feed); // nothing more will be queued
+int pp_feed_finished(const PPFeed *feed); // ended, and everything played
+unsigned long long pp_feed_played(const PPFeed *feed); // frames since the last flush
+// Seeking: drop what's queued. The audio thread does it on its next block;
+// pp_feed_flushed says when, for the ticket pp_feed_flush returned.
+unsigned int pp_feed_flush(PPFeed *feed);
+int pp_feed_flushed(const PPFeed *feed, unsigned int ticket);
+// Plays feed into a strip, bus or output (or nothing, with a null feed).
+void pp_mixer_set_feed(PPMixer *m, PPFeed *feed, int kind, int slot);
+
 // Faders, in linear gain. All changes glide over about 10 ms, so nothing clicks.
 void pp_mixer_set_input_gain(PPMixer *m, int input, float gain);
 void pp_mixer_set_input_mute(PPMixer *m, int input, int muted);
