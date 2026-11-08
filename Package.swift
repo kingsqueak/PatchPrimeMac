@@ -32,7 +32,8 @@ let package = Package(
             name: "PPShared",
             dependencies: ["PPCore"],
             path: "Sources/PPShared",
-            swiftSettings: [.swiftLanguageMode(.v5)]),
+            swiftSettings: [.swiftLanguageMode(.v5)],
+            linkerSettings: [.linkedFramework("IOKit")]),
         .executableTarget(
             name: "PatchPrimeEngine",
             dependencies: ["PPCore", "PPDSP", "PPShared"],

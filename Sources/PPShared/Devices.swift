@@ -5,6 +5,7 @@
 
 import CoreAudio
 import Foundation
+import IOKit
 
 public struct AudioDeviceInfo: Sendable, Equatable {
     public var id: AudioObjectID
@@ -57,16 +58,37 @@ func transportName(_ id: AudioObjectID) -> String {
 }
 
 /// Apple's USB UIDs read AppleUSBAudioEngine:Maker:Name:Serial:Port, which is the only
-/// place some devices report a serial.
-func serialNumber(_ id: AudioObjectID, uid: String) -> String {
+/// place some devices report a serial. A device with no serial of its own has its USB
+/// location there instead (a radio's codec, say): that changes with the port, so it
+/// isn't a serial, and such a device has none.
+func serialNumber(_ id: AudioObjectID, uid: String, locations: Set<String>) -> String {
     if let serial = stringProperty(id, kAudioObjectPropertySerialNumber), !serial.isEmpty {
         return serial
     }
     let parts = uid.split(separator: ":", omittingEmptySubsequences: false)
-    if parts.count >= 5, parts[0] == "AppleUSBAudioEngine", parts[3].count >= 6 {
+    if parts.count >= 5, parts[0] == "AppleUSBAudioEngine", parts[3].count >= 6,
+       !locations.contains(parts[3].lowercased()) {
         return String(parts[3])
     }
     return ""
+}
+
+/// Every USB device's location, as the hex Apple writes into a USB audio UID.
+func usbLocations() -> Set<String> {
+    var found: Set<String> = []
+    var iterator: io_iterator_t = 0
+    guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOUSBHostDevice"), &iterator) == KERN_SUCCESS else {
+        return found
+    }
+    defer { IOObjectRelease(iterator) }
+    while case let entry = IOIteratorNext(iterator), entry != 0 {
+        defer { IOObjectRelease(entry) }
+        if let value = IORegistryEntryCreateCFProperty(entry, "locationID" as CFString, kCFAllocatorDefault, 0)?
+            .takeRetainedValue() as? NSNumber {
+            found.insert(String(value.uint32Value, radix: 16))
+        }
+    }
+    return found
 }
 
 public func listAudioDevices() -> [AudioDeviceInfo] {
@@ -76,6 +98,7 @@ public func listAudioDevices() -> [AudioDeviceInfo] {
     AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size)
     var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
     AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &ids)
+    let locations = usbLocations()
     return ids.compactMap { id in
         guard let uid = stringProperty(id, kAudioDevicePropertyDeviceUID) else { return nil }
         let name = stringProperty(id, kAudioObjectPropertyName) ?? "?"
@@ -85,7 +108,7 @@ public func listAudioDevices() -> [AudioDeviceInfo] {
         var rateSize = UInt32(MemoryLayout<Double>.size)
         AudioObjectGetPropertyData(id, &rateAddress, 0, nil, &rateSize, &rate)
         let signature = DeviceSignature(uid: uid, name: name, transport: transportName(id),
-            serial: serialNumber(id, uid: uid))
+            serial: serialNumber(id, uid: uid, locations: locations))
         return AudioDeviceInfo(id: id, signature: signature, inputs: channels(id, kAudioObjectPropertyScopeInput),
             outputs: channels(id, kAudioObjectPropertyScopeOutput), rate: rate)
     }
