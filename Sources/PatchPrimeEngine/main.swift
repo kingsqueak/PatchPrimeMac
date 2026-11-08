@@ -754,6 +754,25 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
                 break
             }
             return commit(next, "done")
+        case "move" where args.count == 3:
+            // move strip|bus|out <slot> <steps>: shifts it within its own section (negative
+            // is left). Only the order on screen changes; routing and effects follow the slot.
+            let a = Array(args)
+            guard let slot = Int(a[1]), let steps = Int(a[2]) else { break }
+            func shift<T>(_ list: inout [T], _ slotOf: (T) -> Int) -> Bool {
+                guard let i = list.firstIndex(where: { slotOf($0) == slot }) else { return false }
+                let to = min(max(i + steps, 0), list.count - 1)
+                if to != i { list.insert(list.remove(at: i), at: to) }
+                return true
+            }
+            let found: Bool
+            switch a[0] {
+            case "strip": found = shift(&next.strips, \.slot)
+            case "bus": found = shift(&next.buses, \.slot)
+            case "out": found = shift(&next.outputs, \.slot)
+            default: return Reply(ok: false, text: "move strip|bus|out <slot> <steps>")
+            }
+            return found ? commit(next, "done") : Reply(ok: false, text: "no \(a[0]) \(slot)")
         case "state":
             let data = (try? JSONEncoder().encode(settings)) ?? Data()
             return Reply(ok: true, text: String(data: data, encoding: .utf8) ?? "{}")

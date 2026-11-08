@@ -46,6 +46,9 @@ struct StripView: View {
     var effectsOn = true
     /// Where its sound comes from (a strip) or goes (an output), for the default star.
     var endpoint: Endpoint? = nil
+    /// Its place in its section, for Move Left and Move Right.
+    var position = 0
+    var count = 1
 
     var cueKey: String { "\(stage.meterPrefix)\(slot)" }
 
@@ -166,6 +169,11 @@ struct StripView: View {
                 newName = label
                 renaming = true
             }
+            Button("Move Left") { model.send("move", stage.verb, "\(slot)", "-1") }
+                .disabled(position == 0)
+            Button("Move Right") { model.send("move", stage.verb, "\(slot)", "1") }
+                .disabled(position >= count - 1)
+            Divider()
             Button("Remove", role: .destructive) { model.send(remove, "\(slot)") }
         }
         .alert("Rename \(label)", isPresented: $renaming) {
@@ -216,24 +224,27 @@ struct MixerView: View {
         ScrollView(.horizontal) {
             HStack(alignment: .top, spacing: 18) {
                 section("INPUTS", .green) {
-                    ForEach(s.strips, id: \.slot) { strip in
+                    ForEach(Array(s.strips.enumerated()), id: \.element.slot) { index, strip in
                         StripView(stage: .input, slot: strip.slot, label: strip.label, detail: detail(strip.source),
                             gain: strip.gain, muted: strip.muted, offline: model.snapshot.offline.contains(strip.label),
                             silent: model.snapshot.silent.contains(strip.label), effects: strip.effects.count, effectsOn: strip.effectsOn,
-                            endpoint: strip.source)
+                            endpoint: strip.source,
+                            position: index, count: s.strips.count)
                     }
                 }
                 section("MIX BUSES", .blue) {
-                    ForEach(s.buses, id: \.slot) { bus in
+                    ForEach(Array(s.buses.enumerated()), id: \.element.slot) { index, bus in
                         StripView(stage: .bus, slot: bus.slot, label: bus.label, detail: "Mix bus", gain: bus.gain,
-                            muted: bus.muted, offline: false, effects: bus.effects.count, effectsOn: bus.effectsOn)
+                            muted: bus.muted, offline: false, effects: bus.effects.count, effectsOn: bus.effectsOn,
+                            position: index, count: s.buses.count)
                     }
                 }
                 section("OUTPUTS", .orange) {
-                    ForEach(s.outputs, id: \.slot) { output in
+                    ForEach(Array(s.outputs.enumerated()), id: \.element.slot) { index, output in
                         StripView(stage: .output, slot: output.slot, label: output.label, detail: detail(output.sink),
                             gain: output.gain, muted: output.muted, offline: model.snapshot.offline.contains(output.label),
-                            effects: output.effects.count, effectsOn: output.effectsOn, endpoint: output.sink)
+                            effects: output.effects.count, effectsOn: output.effectsOn, endpoint: output.sink,
+                            position: index, count: s.outputs.count)
                     }
                 }
             }

@@ -64,11 +64,11 @@ Open PatchPrimeMac (in Applications, or from the menu bar icon). The first time,
 
 ### A channel strip
 
-<!-- keywords: strip, fader, mute, cue, star, default, route, fx, rename, remove, offline, no signal -->
+<!-- keywords: strip, fader, mute, cue, star, default, route, fx, rename, remove, move, order, reorder, offline, no signal -->
 
 From top to bottom:
 
-- **The name**, in the strip's colour: green for inputs, blue for mix buses, orange for outputs. Right-click the strip to **Rename** or **Remove** it.
+- **The name**, in the strip's colour: green for inputs, blue for mix buses, orange for outputs. Right-click the strip to **Rename** or **Remove** it, or to **Move Left** or **Move Right** within its section (its routing and effects go with it).
 - **FX**: its effects (see [Effects](#effects)). It's blue and shows how many while effects are on, "FX OFF" while they're all bypassed.
 - **What it is**: the device and channel, "Virtual" or "Mix bus". **OFFLINE** in red means its device isn't there (unplugged or switched off); **NO SIGNAL** in orange means the device is there but sends pure silence (nothing plugged into that channel, or microphone permission refused).
 - **The fader**, with the level in dB under it, and the **meter** beside it (after the fader and effects). Drag it, scroll on it (half a dB a notch), or double-click it for 0 dB.
