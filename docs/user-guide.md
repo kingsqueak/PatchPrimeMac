@@ -54,7 +54,7 @@ Open PatchPrimeMac (in Applications, or from the menu bar icon). The first time,
 
 <!-- keywords: tabs, mixer tab, routing tab, setup tab, menu bar, top bar -->
 
-- **Mixer**: every strip, bus and output, with its fader, meter and buttons.
+- **Mixer**: every strip, bus and output, with its fader, meter and buttons. When you add or remove one, the window widens or narrows to fit them all (staying on the screen); you can still resize it yourself.
 - **Routing**: a grid of every route, strip and bus down the side, buses and outputs across.
 - **Setup**: the clock, sample rate and buffer size, plugins, adding inputs, buses and outputs, the system defaults and virtual devices.
 - The top bar also has the **Scenes** menu, the **Recordings** button (a red circle: the Recordings window, with the format, multitrack takes, your recordings and the player; it's filled while anything records), the **Soundboard** button (a grid of squares: the Soundboard window, see [Soundboard](#soundboard)), the **mini window** button, the engine's state, and **Hardware Output**.

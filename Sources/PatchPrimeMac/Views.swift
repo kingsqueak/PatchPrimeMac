@@ -189,6 +189,8 @@ struct MixerView: View {
     @EnvironmentObject var model: Model
     @AppStorage("startHereHidden") private var startHereHidden = false
     var showRouting: () -> Void = {}
+    @State private var window: NSWindow?
+    @State private var visibleWidth: CGFloat = 0
 
     func detail(_ e: Endpoint) -> String {
         switch e {
@@ -251,10 +253,45 @@ struct MixerView: View {
             }
             .padding(14)
             .frame(maxHeight: .infinity, alignment: .top)
+            .background(GeometryReader { g in
+                Color.clear.onChange(of: g.size.width, initial: true) { _, width in fit(content: width) }
+            })
         }
+        .background(GeometryReader { g in
+            Color.clear.onChange(of: g.size.width, initial: true) { _, width in visibleWidth = width }
+        })
+        .background(WindowReader { window = $0 })
         }
         }
     }
+
+    /// When strips come or go, the window takes the mixer's width: a new one isn't
+    /// hidden off the side, and a removed one leaves no gap. Its left edge stays put,
+    /// it stays on the screen, and resizing it by hand still works.
+    func fit(content: CGFloat) {
+        defer { MixerFit.content = content }
+        guard let last = MixerFit.content, abs(last - content) > 1 else { return } // nothing came or went
+        DispatchQueue.main.async {
+            guard let window, visibleWidth > 0, !window.inLiveResize,
+                  window.styleMask.contains(.resizable), !window.styleMask.contains(.fullScreen) else { return }
+            var frame = window.frame
+            var width = frame.width + (content - visibleWidth)
+            width = max(width, WindowFrames.fullMinimum.width)
+            if let screen = (window.screen ?? NSScreen.main)?.visibleFrame {
+                width = min(width, screen.width)
+                if frame.minX + width > screen.maxX { frame.origin.x = max(screen.minX, screen.maxX - width) }
+            }
+            guard abs(width - frame.width) > 1 else { return }
+            frame.size.width = width
+            window.setFrame(frame, display: true, animate: true)
+        }
+    }
+}
+
+/// The mixer's width when last laid out, so a change of strips can be told apart from
+/// the window being resized (which doesn't change it). Kept across the tabs.
+@MainActor enum MixerFit {
+    static var content: CGFloat?
 }
 
 /// Cue (solo in the headphones): where it plays, before or after the fader, its level.
@@ -882,13 +919,23 @@ final class FrameWatcher {
 struct WindowReader: NSViewRepresentable {
     var found: (NSWindow) -> Void
 
-    func makeNSView(context: Context) -> NSView {
-        let v = NSView()
+    /// Tells as soon as it's in a window, and again if it moves to another.
+    final class Tracker: NSView {
+        var found: ((NSWindow) -> Void)?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let w = window { found?(w) }
+        }
+    }
+
+    func makeNSView(context: Context) -> Tracker {
+        let v = Tracker()
+        v.found = found
         DispatchQueue.main.async { if let w = v.window { found(w) } }
         return v
     }
 
-    func updateNSView(_ v: NSView, context: Context) {}
+    func updateNSView(_ v: Tracker, context: Context) { v.found = found }
 }
 
 /// The mini window: every strip, bus and output as a row with a level and a mute.
