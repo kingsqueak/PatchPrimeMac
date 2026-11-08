@@ -165,7 +165,7 @@ final class Player: @unchecked Sendable {
         ExtAudioFileDispose(file)
         // Only now, with this thread done with it (however long a read took), and the
         // mixer off it since before stop(): half a second more for the audio thread.
-        let feed = self.feed
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { pp_feed_destroy(feed) }
+        let finishedFeed = feed
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { pp_feed_destroy(finishedFeed) }
     }
 }
