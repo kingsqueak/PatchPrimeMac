@@ -715,5 +715,59 @@ do {
     AudioComponentInstanceDispose(au)
 }
 
+// The same, pipelined (as the engine runs plugins): never waited on, its result two
+// blocks later, and that delay in this slot only.
+do {
+    var desc = AudioComponentDescription(componentType: kAudioUnitType_Effect, componentSubType: 0x6E626571 /* nbeq */,
+        componentManufacturer: kAudioUnitManufacturer_Apple, componentFlags: 0, componentFlagsMask: 0)
+    let component = AudioComponentFindNext(nil, &desc)!
+    var unit: AudioUnit?
+    let done = DispatchSemaphore(value: 0)
+    AudioComponentInstantiate(component, .loadOutOfProcess) { u, _ in unit = u; done.signal() }
+    while done.wait(timeout: .now()) == .timedOut { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+    let au = unit!
+    var f = AudioStreamBasicDescription(mSampleRate: 48000, mFormatID: kAudioFormatLinearPCM,
+        mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked | kAudioFormatFlagIsNonInterleaved | kAudioFormatFlagsNativeEndian,
+        mBytesPerPacket: 4, mFramesPerPacket: 1, mBytesPerFrame: 4, mChannelsPerFrame: 2, mBitsPerChannel: 32, mReserved: 0)
+    let size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+    AudioUnitSetProperty(au, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &f, size)
+    AudioUnitSetProperty(au, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 0, &f, size)
+    var maxFrames: UInt32 = 4096
+    AudioUnitSetProperty(au, kAudioUnitProperty_MaximumFramesPerSlice, kAudioUnitScope_Global, 0, &maxFrames, 4)
+    _ = AudioUnitInitialize(au)
+    let wrapped = pp_au_create(au, 2, 2, 4096, 0, 48000)!
+    pp_au_set_pipeline(wrapped, 2, 128)
+    let m = pp_mixer_create(48000)!
+    pp_mixer_set_input_active(m, 0, 1)
+    pp_mixer_set_output_active(m, 0, 1)
+    pp_mixer_set_input_to_output(m, 0, 0, 1)
+    _ = pp_mixer_set_effects(m, Int32(PP_KIND_STRIP), 0, "au:aufx:nbeq:appl\t1\t")
+    let fx = pp_mixer_effects(m, Int32(PP_KIND_STRIP), 0)!
+    _ = pp_fx_attach(fx, 0, pp_au_external(wrapped))
+    check("a pipelined plugin's slot reports its two blocks (256 frames)", pp_fx_latency(fx) == 256, "\(pp_fx_latency(fx))")
+    // An impulse at block 60, in real time (a block every 2.67 ms, as from a device).
+    var out: [Float] = []
+    for block in 0..<120 {
+        let l = pp_mixer_input_left(m, 0)!, r = pp_mixer_input_right(m, 0)!
+        for i in 0..<128 { l[i] = 0; r[i] = 0 }
+        if block == 60 { l[5] = 0.5; r[5] = 0.5 }
+        pp_mixer_process(m, 128)
+        out.append(contentsOf: UnsafeBufferPointer(start: pp_mixer_output_left(m, 0), count: 128))
+        Thread.sleep(forTimeInterval: 128.0 / 48000)
+    }
+    let peakAt = out.indices.max { abs(out[$0]) < abs(out[$1]) } ?? -1
+    check("it comes out exactly two blocks later (frame \(peakAt), wanted \(60 * 128 + 5 + 256))",
+        peakAt == 60 * 128 + 5 + 256 && abs(out[peakAt] - 0.5) < 0.01, "\(peakAt) \(peakAt >= 0 ? out[peakAt] : 0)")
+    check("and no block was played dry in steady running (\(pp_au_late(wrapped)) late)", pp_au_late(wrapped) <= 2)
+    // A chain of built-ins only has no such delay.
+    _ = pp_mixer_set_effects(m, Int32(PP_KIND_STRIP), 0, "gain\t1\tgainDb=0\neq\t1\t")
+    check("a chain without a plugin adds no delay", pp_fx_latency(pp_mixer_effects(m, Int32(PP_KIND_STRIP), 0)!) == 0)
+    pp_mixer_collect(m)
+    pp_mixer_destroy(m)
+    pp_au_destroy(wrapped)
+    AudioUnitUninitialize(au)
+    AudioComponentInstanceDispose(au)
+}
+
 print(failures == 0 ? "all passed" : "\(failures) FAILED")
 exit(failures == 0 ? 0 : 1)

@@ -5,12 +5,21 @@
 // AUHostingService), sets its formats and initialises it; this renders it through
 // the chain's external slot (PPExternal).
 //
-// The engine never waits on a plugin for long. Each plugin renders on a realtime
-// worker thread of its own; the engine hands it the block and waits at most half a
-// block. If the answer isn't back by then (a plugin whose process died mid-call keeps
-// the call waiting 20 ms or more, measured), the block plays dry and the plugin isn't
-// asked again until its worker is free. When the process is gone, rendering fails with
-// kAudioComponentErr_InstanceInvalidated: the slot goes dry and the helper reloads it.
+// Each plugin renders on a realtime worker thread of its own, in one of two ways:
+// - Pipelined (what the engine uses, pp_au_set_pipeline): the engine queues each block
+//   and plays back the plugin's result for the block `depth` blocks earlier, never
+//   waiting. A heavy plugin (an AI noise remover, say) then has `depth` whole blocks to
+//   answer in, at the cost of that much delay, in this slot only. The worker renders
+//   every block in order, so the plugin hears continuous sound; a result that still
+//   isn't back in time plays as that block's dry sound, in step. After a gap (the slot
+//   bypassed, the engine stopped) it starts afresh, so nothing stale comes out.
+// - Synchronous (depth 0): the engine hands it the block and waits at most half a block.
+//   If the answer isn't back by then, the block plays dry and the plugin isn't asked
+//   again until its worker is free. A heavy plugin misses often, which sounds like
+//   ratcheting; hence the pipeline.
+// A plugin whose process died mid-call keeps the call waiting 20 ms or more (measured).
+// When the process is gone, rendering fails with kAudioComponentErr_InstanceInvalidated:
+// the slot goes dry and the helper reloads it.
 
 #include "ppcore.h"
 #include "ppdsp.h"
@@ -25,7 +34,23 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <memory>
 #include <vector>
+
+// One block in the pipeline. The engine writes `in` and `dry` and then queues it; the
+// worker renders `in` into `out`; `state` hands it over.
+struct Job
+{
+    enum : int { Free = 0, Queued = 1, Rendering = 2, Done = 3, Abandoned = 4 };
+    std::vector<std::vector<float>> in;
+    std::vector<std::vector<float>> out;
+    std::vector<std::vector<float>> dry; // engine only: what to play if the result is late
+    int frames = 0;
+    int inChannels = 0;
+    OSStatus status = noErr;
+    bool submitted = false; // engine only: queued for the worker (else it was busy)
+    std::atomic<int> state{Free};
+};
 
 struct PPAU
 {
@@ -60,6 +85,18 @@ struct PPAU
     std::atomic<uint64_t> late{0};
     // Set from any thread when the system says its process is gone.
     std::atomic<bool> gone{false};
+
+    // The pipeline (depth 0: synchronous). Jobs are used in turn; `created` counts them.
+    static constexpr int kJobs = 8;
+    int depth = 0;
+    std::unique_ptr<Job[]> jobs;
+    std::atomic<uint64_t> created{0}; // written by the engine, read by the worker
+    uint64_t next = 0;                // worker only: the next job to look at
+    int warm = 0;                     // engine only: blocks still to play undelayed
+    uint64_t lastCall = 0;            // engine only: mach time of the last block
+    // What the render callback feeds the plugin: the block's input.
+    std::vector<std::vector<float>> *feedIn = &in;
+    int feedChannels = 0;
 };
 
 namespace {
@@ -77,7 +114,7 @@ OSStatus feed(void *ref, AudioUnitRenderActionFlags *, const AudioTimeStamp *, U
     auto *au = static_cast<PPAU *>(ref);
     for (UInt32 b = 0; b < list->mNumberBuffers; ++b) {
         // Plugin input b from chain channel b, or the last one there is (mono into stereo).
-        const float *src = au->in[size_t(std::min<int>(int(b), au->inChannels - 1))].data();
+        const float *src = (*au->feedIn)[size_t(std::min<int>(int(b), au->feedChannels - 1))].data();
         if (list->mBuffers[b].mData) {
             std::memcpy(list->mBuffers[b].mData, src, frames * sizeof(float));
         } else {
@@ -102,6 +139,56 @@ void makeRealtime(double periodMs)
         THREAD_TIME_CONSTRAINT_POLICY_COUNT);
 }
 
+// One render call on the worker, timed for diagnosis.
+OSStatus renderOnce(PPAU *au, int frames)
+{
+    if (au->depth == 0) {
+        au->list->mNumberBuffers = UInt32(au->outputs);
+        for (int c = 0; c < au->outputs; ++c) {
+            au->list->mBuffers[c].mNumberChannels = 1;
+            au->list->mBuffers[c].mData = au->out[size_t(c)].data();
+            au->list->mBuffers[c].mDataByteSize = UInt32(frames) * sizeof(float);
+        }
+    }
+    AudioUnitRenderActionFlags flags = 0;
+    const uint64_t t0 = mach_absolute_time();
+    const OSStatus status = AudioUnitRender(au->unit, &flags, &au->stamp, 0, UInt32(frames), au->list);
+    const double ms = ticksToMs(mach_absolute_time() - t0);
+    if (au->calls.fetch_add(1, std::memory_order_relaxed) == 0) au->firstMs.store(ms, std::memory_order_relaxed);
+    if (ms > au->slowestMs.load(std::memory_order_relaxed)) au->slowestMs.store(ms, std::memory_order_relaxed);
+    au->stamp.mSampleTime += frames;
+    return status;
+}
+
+// The pipelined worker's turn: every queued job, in order.
+void drainJobs(PPAU *au)
+{
+    while (au->next < au->created.load(std::memory_order_acquire)) {
+        Job &j = au->jobs[au->next % PPAU::kJobs];
+        int s = Job::Queued;
+        if (j.state.compare_exchange_strong(s, Job::Rendering, std::memory_order_acq_rel)) {
+            au->list->mNumberBuffers = UInt32(au->outputs);
+            for (int c = 0; c < au->outputs; ++c) {
+                au->list->mBuffers[c].mNumberChannels = 1;
+                au->list->mBuffers[c].mData = j.out[size_t(c)].data();
+                au->list->mBuffers[c].mDataByteSize = UInt32(j.frames) * sizeof(float);
+            }
+            au->feedIn = &j.in;
+            au->feedChannels = j.inChannels;
+            j.status = renderOnce(au, j.frames);
+            int r = Job::Rendering;
+            if (!j.state.compare_exchange_strong(r, Job::Done, std::memory_order_acq_rel)) {
+                j.state.store(Job::Free, std::memory_order_release); // given up on meanwhile
+            }
+        } else if (s == Job::Abandoned) {
+            j.state.store(Job::Free, std::memory_order_release); // given up on before its turn
+        } else if (s != Job::Free) {
+            break; // can't be: rendering or done belongs to an earlier pass
+        }
+        ++au->next; // Free: the engine couldn't queue it (this worker was that far behind)
+    }
+}
+
 void *work(void *context)
 {
     auto *au = static_cast<PPAU *>(context);
@@ -112,23 +199,122 @@ void *work(void *context)
         if (au->quit.load()) {
             break;
         }
-        au->list->mNumberBuffers = UInt32(au->outputs);
-        for (int c = 0; c < au->outputs; ++c) {
-            au->list->mBuffers[c].mNumberChannels = 1;
-            au->list->mBuffers[c].mData = au->out[size_t(c)].data();
-            au->list->mBuffers[c].mDataByteSize = UInt32(au->frames) * sizeof(float);
+        if (au->depth > 0) {
+            drainJobs(au);
+            continue;
         }
-        AudioUnitRenderActionFlags flags = 0;
-        const uint64_t t0 = mach_absolute_time();
-        au->status = AudioUnitRender(au->unit, &flags, &au->stamp, 0, UInt32(au->frames), au->list);
-        const double ms = ticksToMs(mach_absolute_time() - t0);
-        if (au->calls.fetch_add(1, std::memory_order_relaxed) == 0) au->firstMs.store(ms, std::memory_order_relaxed);
-        if (ms > au->slowestMs.load(std::memory_order_relaxed)) au->slowestMs.store(ms, std::memory_order_relaxed);
-        au->stamp.mSampleTime += au->frames;
+        au->feedIn = &au->in; // renderOnce points the output at au->out
+        au->feedChannels = au->inChannels;
+        au->status = renderOnce(au, au->frames);
         au->busy.store(false, std::memory_order_release);
         semaphore_signal(au->done);
     }
     return nullptr;
+}
+
+
+// Gives up on every job not yet played (after a gap), and plays the next `depth` blocks
+// undelayed while the pipeline fills again.
+void restartPipeline(PPAU *au)
+{
+    for (int k = 0; k < PPAU::kJobs; ++k) {
+        Job &j = au->jobs[k];
+        if (!j.submitted) {
+            continue;
+        }
+        j.submitted = false;
+        int s = Job::Queued;
+        if (!j.state.compare_exchange_strong(s, Job::Abandoned) && s == Job::Rendering) {
+            s = Job::Rendering;
+            if (!j.state.compare_exchange_strong(s, Job::Abandoned) && s == Job::Done) {
+                j.state.store(Job::Free, std::memory_order_release);
+            }
+        } else if (s == Job::Done) {
+            j.state.store(Job::Free, std::memory_order_release);
+        }
+    }
+    au->warm = au->depth;
+}
+
+// [RT] Pipelined: queue this block, play the one `depth` blocks back.
+int renderPipelined(PPAU *au, float *const *planes, int channels, int frames)
+{
+    const uint64_t now = mach_absolute_time();
+    // A gap of more than 8 blocks (or 50 ms): bypassed, or the engine stopped. Start afresh.
+    const double gapMs = std::max(50.0, 8000.0 * frames / au->rate);
+    if (au->lastCall != 0 && ticksToMs(now - au->lastCall) > gapMs) {
+        restartPipeline(au);
+    }
+    au->lastCall = now;
+    const int chans = std::min(channels, 2);
+    const uint64_t n = au->created.load(std::memory_order_relaxed);
+    // Queue this block, unless its job is still in use (the worker that far behind).
+    Job &in = au->jobs[n % PPAU::kJobs];
+    if (in.submitted) {
+        // Never played back (can't be, short of a pipeline deeper than its jobs): free it.
+        restartPipeline(au);
+    }
+    for (int c = 0; c < chans; ++c) {
+        std::memcpy(in.dry[size_t(c)].data(), planes[c], size_t(frames) * sizeof(float));
+    }
+    in.frames = frames;
+    in.inChannels = chans;
+    if (in.state.load(std::memory_order_acquire) == Job::Free) {
+        for (int c = 0; c < chans; ++c) {
+            std::memcpy(in.in[size_t(c)].data(), planes[c], size_t(frames) * sizeof(float));
+        }
+        in.submitted = true;
+        in.state.store(Job::Queued, std::memory_order_release);
+    } else {
+        in.submitted = false;
+        au->late.fetch_add(1, std::memory_order_relaxed);
+    }
+    au->created.store(n + 1, std::memory_order_release);
+    semaphore_signal(au->go);
+    if (au->warm > 0) {
+        --au->warm; // filling: this block plays undelayed and dry
+        return 0;
+    }
+    // Play back the block `depth` blocks ago: the plugin's result, or its dry sound in step.
+    Job &out = au->jobs[(n + PPAU::kJobs - uint64_t(au->depth)) % PPAU::kJobs];
+    const int playFrames = std::min(frames, out.frames);
+    int s = out.state.load(std::memory_order_acquire);
+    if (out.submitted && s == Job::Done) {
+        if (out.status == kAudioComponentErr_InstanceInvalidated) {
+            out.submitted = false;
+            out.state.store(Job::Free, std::memory_order_release);
+            return 1; // its process is gone
+        }
+        if (out.status == noErr) {
+            for (int c = 0; c < channels; ++c) {
+                const auto &src = out.out[size_t(std::min(c, au->outputs - 1))];
+                std::memcpy(planes[c], src.data(), size_t(playFrames) * sizeof(float));
+            }
+        } else {
+            for (int c = 0; c < channels; ++c) {
+                std::memcpy(planes[c], out.dry[size_t(std::min(c, out.inChannels - 1))].data(), size_t(playFrames) * sizeof(float));
+            }
+        }
+        out.submitted = false;
+        out.state.store(Job::Free, std::memory_order_release);
+        return 0;
+    }
+    // Not back in time (or never queued): its dry sound, so the timing holds.
+    for (int c = 0; c < channels; ++c) {
+        std::memcpy(planes[c], out.dry[size_t(std::min(c, std::max(1, out.inChannels) - 1))].data(), size_t(playFrames) * sizeof(float));
+    }
+    if (out.submitted) {
+        au->late.fetch_add(1, std::memory_order_relaxed);
+        out.submitted = false;
+        s = Job::Queued;
+        if (!out.state.compare_exchange_strong(s, Job::Abandoned) && s == Job::Rendering) {
+            s = Job::Rendering;
+            if (!out.state.compare_exchange_strong(s, Job::Abandoned) && s == Job::Done) {
+                out.state.store(Job::Free, std::memory_order_release);
+            }
+        }
+    }
+    return 0;
 }
 
 int render(void *context, float *const *planes, int channels, int frames)
@@ -139,6 +325,9 @@ int render(void *context, float *const *planes, int channels, int frames)
     }
     if (frames > au->maxFrames || channels < 1) {
         return 0; // can't happen with the engine's blocks; leave the sound as it is
+    }
+    if (au->depth > 0) {
+        return renderPipelined(au, planes, channels, frames);
     }
     if (au->busy.load(std::memory_order_acquire)) {
         au->late.fetch_add(1, std::memory_order_relaxed);
@@ -211,6 +400,23 @@ PPAU *pp_au_create(void *audioUnit, int inputs, int outputs, int maxFrames, int 
 }
 
 const PPExternal *pp_au_external(PPAU *au) { return &au->external; }
+
+void pp_au_set_pipeline(PPAU *au, int depth, int blockFrames)
+{
+    if (depth <= 0 || au->depth > 0) {
+        return;
+    }
+    au->depth = std::min(depth, PPAU::kJobs - 2);
+    au->jobs.reset(new Job[PPAU::kJobs]);
+    for (int k = 0; k < PPAU::kJobs; ++k) {
+        Job &j = au->jobs[k];
+        j.in.assign(2, std::vector<float>(size_t(au->maxFrames)));
+        j.dry.assign(2, std::vector<float>(size_t(au->maxFrames)));
+        j.out.assign(size_t(au->outputs), std::vector<float>(size_t(au->maxFrames)));
+    }
+    au->warm = au->depth;
+    au->external.latency += au->depth * std::max(1, blockFrames);
+}
 
 void pp_au_destroy(PPAU *au)
 {

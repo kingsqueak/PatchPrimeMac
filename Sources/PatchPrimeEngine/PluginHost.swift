@@ -31,6 +31,10 @@ final class PluginHost {
     private var loading: Set<String> = []
     private(set) var problems: [String: String] = [:] // key → why it isn't running
     var rate = 48000.0
+    /// The engine's block, in frames: plugins play back this many frames times
+    /// pipelineDepth later (see pp_au_set_pipeline).
+    var block = 128
+    static let pipelineDepth: Int32 = 2
     /// The mixer to attach to now (nil while the engine is stopped). Read when a load
     /// finishes, never kept: the engine may have restarted in between.
     var mixerNow: () -> OpaquePointer? = { nil }
@@ -320,6 +324,9 @@ final class PluginHost {
                 var lsize = UInt32(MemoryLayout<Float64>.size)
                 AudioUnitGetProperty(unit, kAudioUnitProperty_Latency, kAudioUnitScope_Global, 0, &latency, &lsize)
                 guard let au = pp_au_create(unit, Int32(inputs), Int32(outputs), Int32(maxFrames), Int32((latency * rate).rounded()), rate) else { return }
+                // Never wait on it: its result plays two blocks later (heavy plugins, AI
+                // noise removers say, need that long), in this slot only.
+                pp_au_set_pipeline(au, Self.pipelineDepth, Int32(self.block))
                 let instance = Instance(av: av, unit: unit, au: au, kind: kind, slot: slot, index: index, chainChannels: chainChannels)
                 self.lock.lock()
                 self.byUnit[UnsafeMutableRawPointer(unit)] = au

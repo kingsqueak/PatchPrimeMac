@@ -183,10 +183,14 @@ int pp_shm_open(const char *name, int flags, int mode);
 // before disposing of the AudioUnit.
 typedef struct PPAU PPAU;
 struct PPExternal;
-// It renders on a realtime worker thread of its own; the engine waits at most half a
-// block for it, else that block is dry.
+// It renders on a realtime worker thread of its own (see pp_au_set_pipeline).
 PPAU *pp_au_create(void *audioUnit, int inputs, int outputs, int maxFrames, int latencySamples, double sampleRate);
 const struct PPExternal *pp_au_external(PPAU *au);
+// Pipelined: the engine plays back the plugin's result `depth` blocks after it handed
+// the block over, never waiting, so a heavy plugin has that long to answer; it adds
+// depth * blockFrames to the slot's latency (and only this slot's). Call once, after
+// create and before attaching. Without it, the engine waits at most half a block.
+void pp_au_set_pipeline(PPAU *au, int depth, int blockFrames);
 void pp_au_destroy(PPAU *au);
 // From any thread: its process has gone (the system said so); stop calling it at once.
 void pp_au_mark_gone(PPAU *au);

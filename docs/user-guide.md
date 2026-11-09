@@ -266,7 +266,7 @@ A plain level trim, ±24 dB.
 
 ### Plugins (Audio Units)
 
-<!-- keywords: plugin, audio unit, au, waves, melda, scan, browser, filter, crash, plugin window, vst, clap -->
+<!-- keywords: plugin, audio unit, au, waves, melda, scan, browser, filter, crash, plugin window, vst, clap, latency, delay, stutter, ratcheting -->
 
 Besides the built-in effects, any chain can run **Audio Unit** effects: Waves, MeldaProduction, Apple's own, and others you have installed. (VST3 and CLAP are planned.)
 
@@ -275,6 +275,7 @@ Besides the built-in effects, any chain can run **Audio Unit** effects: Waves, M
 - **Adding one:** in the effects window, **Add Effect → Plugins…**. Double-click a plugin, or select it and press **Add**. Plugins the scan found broken, or that only come in surround versions, aren't offered. It takes under a second to start; until then the strip plays as if it weren't there.
 - **Its window:** **Open Window** on the plugin shows its own controls. What you change there is saved with the chain, in presets and in scenes.
 - **Plugins run apart from the engine.** macOS runs them in a process of its own, so a plugin that crashes can't take your audio down: the affected strip plays without it for a moment while it's loaded again with its settings, and everything else carries on.
+- **A plugin adds a little delay, to that strip only.** So that even heavy plugins (an AI noise remover, say) never miss and never stutter, each plugin is given two blocks to work in: 5.3 ms at the default 128-frame buffer. Only a strip, bus or output with a plugin in its chain gets it, and only while the plugin is switched on; the built-in effects add none (beyond noise suppression's own 10 ms). Recordings allow for it, so they stay in line.
 - Each plugin costs what its processing costs, plus a few hundredths of a millisecond for running apart. The built-in effects remain the lightest choice.
 
 ## Recording

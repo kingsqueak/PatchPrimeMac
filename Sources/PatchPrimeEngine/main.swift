@@ -140,6 +140,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         core = created
         engineRate = rate
         plugins.rate = rate
+        plugins.block = settings.bufferFrames
         engineBlock = settings.bufferFrames
         watchRate(hidden)
     }
