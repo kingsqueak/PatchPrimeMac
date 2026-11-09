@@ -1,3 +1,5 @@
+<img src="packaging/icon/icon.png" alt="" width="128" align="right">
+
 # PatchPrimeMac
 
 A free, open-source audio mixer for macOS. It turns your Mac's audio into a small mixing console: microphones and instruments, the sound from your apps, mix buses and outputs, with effects on any of them. It runs in the background, so the sound keeps going with the window closed, and it carries on when a device is unplugged, switched off or plugged back in.

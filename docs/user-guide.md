@@ -227,7 +227,7 @@ It hears the other strip after that strip's own effects and fader, so with noise
 
 <!-- keywords: agc, automatic gain, loudness, lufs, leveller -->
 
-Slowly turns the sound up or down so it sits at a steady loudness, like a radio station's processing. **Target** is the loudness to aim for, in LUFS (about −16 for streams and podcasts); **Max boost** and **Max cut**, how far it may go; **Speed**, how many seconds a change takes; **Freeze below**, the level under which it holds still, so silence isn't turned up.
+Slowly turns the sound up or down so it sits at a steady loudness, like a radio station's processing. **Target** is the loudness to aim for, in LUFS (about −16 for streams and podcasts); **Max boost** (up to 35 dB, for a quiet source) and **Max cut** (up to 24 dB), how far it may go; **Speed**, how many seconds a change takes; **Freeze below**, the level under which it holds still, so silence isn't turned up.
 
 ### Safety limiter
 

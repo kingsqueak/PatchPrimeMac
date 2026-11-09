@@ -278,7 +278,7 @@ std::vector<ParamInfo> effectParams(const std::string &type)
     }
     if (type == "leveler") {
         return {param("target", "Target", "LUFS", -36.0, -6.0, -18.0),
-                param("maxBoost", "Max boost", "dB", 0.0, 24.0, 12.0),
+                param("maxBoost", "Max boost", "dB", 0.0, 35.0, 12.0),
                 param("maxCut", "Max cut", "dB", 0.0, 24.0, 12.0),
                 param("speed", "Speed", "s", 0.5, 30.0, 5.0, ParamKind::Log),
                 param("freeze", "Freeze below", "LUFS", -70.0, -20.0, -50.0)};

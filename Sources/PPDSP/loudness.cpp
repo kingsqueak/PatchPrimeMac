@@ -130,7 +130,7 @@ void LevelerEffect::setParam(const std::string &name, double value)
     if (name == "target") {
         m_target = static_cast<float>(std::clamp(value, -36.0, -6.0));
     } else if (name == "maxBoost") {
-        m_maxBoost = static_cast<float>(std::clamp(value, 0.0, 24.0));
+        m_maxBoost = static_cast<float>(std::clamp(value, 0.0, 35.0));
     } else if (name == "maxCut") {
         m_maxCut = static_cast<float>(std::clamp(value, 0.0, 24.0));
     } else if (name == "speed") {

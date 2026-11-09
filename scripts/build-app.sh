@@ -13,12 +13,14 @@ mkdir -p "$app/Contents/MacOS"
 cp "$bin/PatchPrimeMac" "$app/Contents/MacOS/PatchPrimeMac"
 mkdir -p "$app/Contents/Resources"
 cp "$root/docs/user-guide.md" "$app/Contents/Resources/user-guide.md"
+cp "$root/packaging/icon/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
 cat > "$app/Contents/Info.plist" <<PL
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
 	<key>CFBundleExecutable</key><string>PatchPrimeMac</string>
+	<key>CFBundleIconFile</key><string>AppIcon</string>
 	<key>CFBundleIdentifier</key><string>com.kingsqueak.patchprimemac</string>
 	<key>CFBundleName</key><string>PatchPrimeMac</string>
 	<key>CFBundlePackageType</key><string>APPL</string>

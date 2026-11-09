@@ -737,6 +737,23 @@ public:
         capped.prepare(rate, 2);
         values = run(capped, amplitude, 12);
         QVERIFY2(std::abs(values[0] - 6.0F) < 0.3F, qPrintable(QString::number(values[0])));
+        // A very quiet source (-48 LUFS, above the -50 freeze) comes up 30 dB to -18.
+        LevelerEffect quiet;
+        quiet.setParam("speed", 1.0);
+        quiet.setParam("maxBoost", 35.0);
+        quiet.prepare(rate, 2);
+        const double faint = std::pow(10.0, -48.0 / 20.0);
+        values = run(quiet, faint, 14);
+        QVERIFY2(std::abs(values[0] - 30.0F) < 0.5F, qPrintable(QString::number(values[0])));
+        // And the most it will give is 35 dB, whatever it's asked for: target -6 from
+        // -48 would need 42.
+        LevelerEffect most;
+        most.setParam("speed", 1.0);
+        most.setParam("target", -6.0);
+        most.setParam("maxBoost", 50.0);
+        most.prepare(rate, 2);
+        values = run(most, faint, 14);
+        QVERIFY2(std::abs(values[0] - 35.0F) < 0.5F, qPrintable(QString::number(values[0])));
     }
 
     void latencyIsWhereTheSoundComesOut()

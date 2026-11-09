@@ -86,6 +86,7 @@ notices="$out/THIRD-PARTY-NOTICES.txt"
     cat packaging/sounds/SOURCES.md
 } > "$notices"
 cp LICENSE "$app/Contents/Resources/LICENSE.txt"
+cp packaging/icon/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 cp "$notices" "$app/Contents/Resources/"
 cat > "$app/Contents/Info.plist" <<PL
 <?xml version="1.0" encoding="UTF-8"?>
@@ -93,6 +94,7 @@ cat > "$app/Contents/Info.plist" <<PL
 <plist version="1.0">
 <dict>
 	<key>CFBundleExecutable</key><string>PatchPrimeMac</string>
+	<key>CFBundleIconFile</key><string>AppIcon</string>
 	<key>CFBundleIdentifier</key><string>com.kingsqueak.patchprimemac</string>
 	<key>CFBundleName</key><string>PatchPrimeMac</string>
 	<key>CFBundleDisplayName</key><string>PatchPrimeMac</string>

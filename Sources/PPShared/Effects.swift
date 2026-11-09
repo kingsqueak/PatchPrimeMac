@@ -108,6 +108,7 @@ public enum EffectMeterReading {
         switch type {
         case "gate", "expander": return 40
         case "limiter", "deesser": return 12
+        case "leveler": return 36 // its boost goes to +35 dB
         default: return 24
         }
     }
