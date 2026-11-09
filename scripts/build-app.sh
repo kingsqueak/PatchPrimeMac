@@ -29,5 +29,9 @@ cat > "$app/Contents/Info.plist" <<PL
 </dict>
 </plist>
 PL
-id="$(security find-identity -v -p codesigning | sed -n 's/.*\([0-9A-F]\{40\}\).*/\1/p' | head -1)"
-codesign --force --sign "${id:--}" "$app"
+# Ad-hoc, as releases are, unless PPMAC_SIGN names a certificate (its SHA-1). Not
+# whatever certificate the Mac has first: macOS names a background item after its
+# signer ("Background Items Added: Software from <developer>"), so a personal Apple
+# Development certificate would put a person's name where users expect PatchPrimeMac.
+id="${PPMAC_SIGN:--}"
+codesign --force --sign "$id" "$app"

@@ -31,6 +31,7 @@ cat > "$plist" <<PL
 	<key>ProcessType</key><string>Interactive</string>
 	<key>StandardOutPath</key><string>$logs/engine.log</string>
 	<key>StandardErrorPath</key><string>$logs/engine.log</string>
+	<key>AssociatedBundleIdentifiers</key><string>com.kingsqueak.patchprimemac</string>
 </dict>
 </plist>
 PL
