@@ -124,6 +124,7 @@ struct MenuContent: View {
             NSApp.activate(ignoringOtherApps: true)
             openWindow(id: "help")
         }
+        Button("Reset Audio Engine") { ResetController.shared.reset(model) }
         Divider()
         Button("Quit (audio keeps running)") { NSApp.terminate(nil) }
     }

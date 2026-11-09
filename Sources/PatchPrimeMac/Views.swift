@@ -662,15 +662,19 @@ struct ContentView: View {
                 UpdateNote()
                 Spacer()
                 statusText
-                Button(model.snapshot.settings.hardwareOutputEnabled ? "Hardware Output On" : "Hardware Output Off") {
-                    if model.snapshot.settings.hardwareOutputEnabled {
-                        model.send("hardware", "off")
-                    } else {
-                        confirmHardware = true
+                if !model.reachable || !model.snapshot.running || ResetController.shared.busy {
+                    ResetButton()
+                } else {
+                    Button(model.snapshot.settings.hardwareOutputEnabled ? "Hardware Output On" : "Hardware Output Off") {
+                        if model.snapshot.settings.hardwareOutputEnabled {
+                            model.send("hardware", "off")
+                        } else {
+                            confirmHardware = true
+                        }
                     }
+                    .tint(model.snapshot.settings.hardwareOutputEnabled ? .orange : nil)
+                    .buttonStyle(.borderedProminent)
                 }
-                .tint(model.snapshot.settings.hardwareOutputEnabled ? .orange : nil)
-                .buttonStyle(.borderedProminent)
             }
             .padding(10)
             Divider()
@@ -703,7 +707,7 @@ struct ContentView: View {
         if !model.reachable {
             Text("Engine isn't running").foregroundStyle(.red).font(.caption)
         } else if !model.snapshot.running {
-            Text("Driver not loaded").foregroundStyle(.red).font(.caption)
+            Text("Audio stopped").foregroundStyle(.red).font(.caption)
         } else if model.snapshot.underruns + model.snapshot.overruns > 0 {
             Text("Audio dropouts: \(model.snapshot.underruns + model.snapshot.overruns)").foregroundStyle(.orange).font(.caption)
         } else {
@@ -949,8 +953,11 @@ struct MiniView: View {
         let s = model.snapshot.settings
         VStack(spacing: 0) {
             HStack {
-                Text("PatchPrimeMac").font(.caption.bold()).foregroundStyle(.secondary)
+                Text("PatchPrimeMac").font(.caption.bold()).foregroundStyle(.secondary).lineLimit(1)
                 Spacer()
+                if !model.reachable || !model.snapshot.running || ResetController.shared.busy {
+                    MiniResetButton()
+                }
                 Button(action: expand) { Image(systemName: "rectangle.expand.vertical") }
                     .buttonStyle(.borderless)
                     .help("Back to the full mixer")

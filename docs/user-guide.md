@@ -405,8 +405,9 @@ Run **Uninstall PatchPrimeMac** from the DMG (or the uninstaller in the app's He
 
 ## Troubleshooting
 
-<!-- keywords: problem, no sound, silent, not working, help, fix -->
+<!-- keywords: problem, no sound, silent, not working, help, fix, sleep, wake, reset, restart, engine stopped, coreaudiod -->
 
+- **The sound stopped (after the Mac slept, say):** when the engine stops or stops answering, the top bar says so and **Hardware Output** becomes a red **Reset Audio** button (in the mini window, a small red ↻). It restarts the engine with your settings, no password needed. If the sound still doesn't come back, it offers to restart macOS's audio system too: that asks for an administrator's password and stops all sound on the Mac for a moment, so turn loud speakers or amplifiers down first. **Reset Audio Engine** in the menu bar icon's menu does the same at any time. (From Terminal, macOS's audio system is restarted with `sudo killall coreaudiod`, with a **d**.) The engine also looks after itself: it stops its audio cleanly when the Mac goes to sleep and starts afresh a few seconds after it wakes, keeps trying if starting fails, and restarts itself if it ever stops answering for 20 seconds.
 - **No sound at all:** is the engine running (top bar, or the menu bar icon)? Is **Hardware Output** on? Is the strip routed to an output (its Route button), and that output not muted? If the Mac's default output is a virtual device and the engine isn't running, nothing plays: pick your speakers in **System Settings → Sound** to get sound back, then restart PatchPrimeMac.
 - **A microphone shows NO SIGNAL:** check the channel has the mic on it, and that PatchPrimeMac is allowed in **System Settings → Privacy & Security → Microphone** (after an update, macOS asks again; if you missed the prompt, turn PatchPrimeMac on there).
 - **A strip shows OFFLINE:** its device isn't there. Plug it in or switch it on; it comes back by itself.

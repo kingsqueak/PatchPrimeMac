@@ -34,6 +34,11 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     // Recordings being written, by "s0", "b1", "o2"; whether those of a take are.
     var recordings: [String: Recording] = [:]
     var recordNote: String?
+    // Health (see Health.swift): asleep between the Mac's sleep and its wake work;
+    // the last try at starting the core.
+    var asleep = false
+    var wakeWork: DispatchWorkItem?
+    var lastStartAttempt = Date.distantPast
     var player: Player?
     var padPlayers: [String: (player: Player, slot: Int)] = [:] // soundboard pads playing, by id
     // The built-in effects, and the chains last given to the mixer, by "s0", "b1", "o2",
@@ -91,6 +96,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         if !presets.load() { note = presets.lastError }
         seedPads()
         refreshDevices()
+        watchHealth()
         var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
             mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
         AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main) { [weak self] _, _ in
@@ -102,6 +108,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         meterTimer.resume()
         clockTimer.schedule(deadline: .now(), repeating: 0.25)
         clockTimer.setEventHandler { [weak self] in
+            self?.checkHealth()
             self?.steerClock()
             if let player = self?.player, player.finished { self?.stopPlayer() } // played to the end
             self?.tidyPads()
@@ -117,15 +124,17 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     }
 
     func startCoreIfPossible() {
-        guard core == nil, let hidden = deviceForUID("PatchPrimeMac.Engine") else { return }
+        guard core == nil, !asleep, let hidden = deviceForUID("PatchPrimeMac.Engine") else { return }
         // The virtual devices all follow the hidden one's rate.
         if !setNominalRate(hidden, settings.sampleRate) {
             note = "The virtual devices didn't change to \(Int(settings.sampleRate)) Hz, so the engine runs at \(Int(nominalRate(hidden))) Hz."
         }
         let rate = nominalRate(hidden)
         let created = pp_engine_create(hidden, rate, Int32(settings.bufferFrames))
-        guard pp_engine_start(created) == 0 else {
+        let status = pp_engine_start(created)
+        guard status == 0 else {
             pp_engine_destroy(created)
+            engineLog.error("The audio core didn't start (error \(status, privacy: .public)); trying again in a few seconds.")
             return
         }
         core = created
@@ -138,6 +147,15 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
     /// Stops the engine and starts it again with the current settings. Used for a new
     /// rate or buffer size; every route is bound again, so each device re-locks.
     func restartCore() {
+        engineLog.notice("Restarting the audio core.")
+        stopCore()
+        lastStartAttempt = Date()
+        startCoreIfPossible()
+        apply()
+    }
+
+    /// Stops the audio core and lets go of everything bound to it.
+    func stopCore() {
         pendingRestart?.cancel()
         pendingRestart = nil
         if core != nil, !recordings.isEmpty {
@@ -146,7 +164,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
                 rec.attached = false
                 pp_tap_end(rec.tap)
             }
-            recordNote = "Recording stopped: the engine restarted (a sample rate or buffer change, or macOS's audio system). What was recorded until then is kept."
+            recordNote = "Recording stopped: the engine restarted (a sample rate or buffer change, the Mac going to sleep, or macOS's audio system). What was recorded until then is kept."
         }
         stopPlayer() // its feed is the old mixer's, at the old rate
         stopAllPads()
@@ -160,8 +178,6 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
         appliedSafety = [:]
         appliedKeys = [:]
         metering = [:]
-        startCoreIfPossible()
-        apply()
     }
 
     func restartSoon() {
@@ -788,6 +804,7 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             cyclesMoved = Date()
             lastCycles = 0
             note = "The engine's clock stopped (macOS's audio system changed under it), so it was restarted."
+            engineLog.notice("The engine's clock stopped; restarting.")
             restartCore()
             return
         }
@@ -1654,6 +1671,23 @@ final class Engine: NSObject, PPEngineService, NSXPCListenerDelegate, @unchecked
             let answer = driverCommand("remove \(args.first!)")
             appliedNames = [:]
             return Reply(ok: answer == "ok", text: answer)
+        case "debug-stall" where args.count == 1:
+            // For testing the watchdog: the main thread does nothing for this long.
+            guard let seconds = Double(args.first!), seconds > 0, seconds <= 60 else { break }
+            engineLog.notice("debug-stall: blocking the main thread for \(seconds, privacy: .public) s.")
+            Thread.sleep(forTimeInterval: seconds)
+            return Reply(ok: true, text: "stalled \(seconds) s")
+        case "debug-stop-core":
+            // For testing the restart: the core stops as if it had failed to start.
+            stopCore()
+            lastStartAttempt = Date()
+            return Reply(ok: true, text: "core stopped; it should start again within a few seconds")
+        case "debug-sleep":
+            goingToSleep()
+            return Reply(ok: true, text: "as if the Mac went to sleep")
+        case "debug-wake":
+            wokeUp()
+            return Reply(ok: true, text: "as if the Mac woke; the core starts in 3 s")
         case "help":
             return Reply(ok: true, text: """
             status | devices | state | hardware on|off
