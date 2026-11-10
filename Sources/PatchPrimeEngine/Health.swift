@@ -67,7 +67,11 @@ extension Engine {
         engineLog.notice("Going to sleep: stopping the audio core.")
         asleep = true
         wakeWork?.cancel()
-        if core != nil { stopCore() }
+        guard core != nil else { return }
+        let began = DispatchTime.now().uptimeNanoseconds
+        stopCore()
+        let ms = (DispatchTime.now().uptimeNanoseconds - began) / 1_000_000
+        engineLog.notice("Audio core stopped for sleep in \(ms, privacy: .public) ms.")
     }
 
     /// After wake: let macOS bring its devices back, then start fresh.

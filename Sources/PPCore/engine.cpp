@@ -564,17 +564,37 @@ double pp_engine_output_ratio_ppm(PPEngine *e, int output)
     return r ? r->bridge.ratioPpm() : 0;
 }
 
+// Every IOProc is stopped first, the engine's and each device's (once AudioDeviceStop
+// returns, its IOProc isn't running and won't be called again), so the routes can then
+// be freed without waiting for audio cycles. Unbinding route by route waited for cycles,
+// up to a second each, and before sleep macOS has already paused all IO: with seven
+// routes bound the engine held up the Mac's sleep for 7.4 s.
 void pp_engine_destroy(PPEngine *e)
 {
-    for (int i = 0; i < PP_MAX_INPUTS; ++i) {
-        pp_engine_unbind_input(e, i);
-    }
-    for (int o = 0; o < PP_MAX_OUTPUTS; ++o) {
-        pp_engine_unbind_output(e, o);
-    }
-    if (e->proc) {
-        AudioDeviceStop(e->hidden, e->proc);
-        AudioDeviceDestroyIOProcID(e->hidden, e->proc);
+    {
+        std::lock_guard lock(e->control);
+        if (e->proc) {
+            AudioDeviceStop(e->hidden, e->proc);
+            AudioDeviceDestroyIOProcID(e->hidden, e->proc);
+        }
+        for (auto &d : e->devices) {
+            AudioDeviceStop(d->id, d->proc);
+            AudioDeviceDestroyIOProcID(d->id, d->proc);
+        }
+        for (auto &b : e->inputBridge) {
+            b.store(nullptr);
+        }
+        for (auto &b : e->outputBridge) {
+            b.store(nullptr);
+        }
+        for (auto &d : e->devices) {
+            for (auto *list : {&d->inputs, &d->outputs}) {
+                for (auto &slot : *list) {
+                    delete slot.exchange(nullptr);
+                }
+            }
+        }
+        e->devices.clear();
     }
     pp_mixer_destroy(e->mixer);
     delete e;
