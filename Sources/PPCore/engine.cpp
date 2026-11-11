@@ -370,13 +370,24 @@ void pp_engine_enable_hardware_output(PPEngine *e, int enabled, float limit)
     e->hardwareEnabled.store(enabled != 0);
 }
 
+// Strip and output numbers outside the engine's tables are refused, never used: they
+// can come from a settings file someone edited by hand.
+static bool validInput(int input) { return input >= 0 && input < PP_MAX_INPUTS; }
+static bool validOutput(int output) { return output >= 0 && output < PP_MAX_OUTPUTS; }
+
 void pp_engine_bind_input_virtual(PPEngine *e, int input, int slot)
 {
+    if (!validInput(input)) {
+        return;
+    }
     e->inputSlot[size_t(input)].store(slot);
 }
 
 void pp_engine_bind_output_virtual(PPEngine *e, int output, int slot)
 {
+    if (!validOutput(output)) {
+        return;
+    }
     e->outputSlot[size_t(output)].store(slot);
 }
 
@@ -393,6 +404,9 @@ static int freeSlot(std::array<std::atomic<Route *>, kRoutesPerDevice> &slots)
 int pp_engine_bind_input_device(PPEngine *e, int input, unsigned int device, int left, int right,
     double savedPpm)
 {
+    if (!validInput(input)) {
+        return -3;
+    }
     std::lock_guard lock(e->control);
     PPDevice *d = e->deviceFor(device);
     if (!d) {
@@ -411,6 +425,9 @@ int pp_engine_bind_input_device(PPEngine *e, int input, unsigned int device, int
 int pp_engine_bind_output_device(PPEngine *e, int output, unsigned int device, int left, int right,
     double savedPpm)
 {
+    if (!validOutput(output)) {
+        return -3;
+    }
     std::lock_guard lock(e->control);
     PPDevice *d = e->deviceFor(device);
     if (!d) {
@@ -428,6 +445,9 @@ int pp_engine_bind_output_device(PPEngine *e, int output, unsigned int device, i
 
 void pp_engine_unbind_input(PPEngine *e, int input)
 {
+    if (!validInput(input)) {
+        return;
+    }
     std::lock_guard lock(e->control);
     Route *r = e->inputBridge[size_t(input)].exchange(nullptr);
     e->inputSlot[size_t(input)].store(-1);
@@ -450,6 +470,9 @@ void pp_engine_unbind_input(PPEngine *e, int input)
 
 void pp_engine_unbind_output(PPEngine *e, int output)
 {
+    if (!validOutput(output)) {
+        return;
+    }
     std::lock_guard lock(e->control);
     Route *r = e->outputBridge[size_t(output)].exchange(nullptr);
     e->outputSlot[size_t(output)].store(-1);
@@ -554,12 +577,18 @@ int pp_engine_device_clock(PPEngine *e, unsigned int device, double *seconds, do
 
 double pp_engine_input_ratio_ppm(PPEngine *e, int input)
 {
+    if (!validInput(input)) {
+        return 0;
+    }
     const Route *r = e->inputBridge[size_t(input)].load();
     return r ? r->bridge.ratioPpm() : 0;
 }
 
 double pp_engine_output_ratio_ppm(PPEngine *e, int output)
 {
+    if (!validOutput(output)) {
+        return 0;
+    }
     const Route *r = e->outputBridge[size_t(output)].load();
     return r ? r->bridge.ratioPpm() : 0;
 }

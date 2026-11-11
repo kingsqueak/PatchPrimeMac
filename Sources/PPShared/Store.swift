@@ -47,7 +47,11 @@ public struct Store: Sendable {
     }
 
     func read(_ url: URL) throws -> Settings {
-        try JSONDecoder().decode(Settings.self, from: Data(contentsOf: url))
+        let settings = try JSONDecoder().decode(Settings.self, from: Data(contentsOf: url))
+        // Numbered past the engine's tables: treated as unreadable (kept aside, a backup
+        // loaded), since the engine can't use it.
+        guard settings.slotProblems().isEmpty else { throw CocoaError(.fileReadCorruptFile) }
+        return settings
     }
 
     /// The settings, and a note if something had to be recovered.

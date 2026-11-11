@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 KC2RGW Chris
+#
+# The three test programs on every push to main and every pull request, so a broken
+# commit shows up then, not at release time. (The Swift package doesn't use the
+# libASPL submodule; the driver isn't built here.)
+
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build
+        run: swift build -c release --arch arm64
+
+      - name: Test
+        run: |
+          bin="$(swift build -c release --arch arm64 --show-bin-path)"
+          status=0
+          for t in ppdsp-test ppshared-test ppcore-test; do
+            echo "== $t"
+            "$bin/$t" > "$t.log" 2>&1 || status=1
+            grep -E '^(FAIL|not ok)|FAILED|^all passed' "$t.log" || cat "$t.log"
+          done
+          exit $status

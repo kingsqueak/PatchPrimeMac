@@ -344,10 +344,29 @@ public struct Settings: Codable, Equatable, Sendable {
     /// The buffer size to ask of a device.
     public func buffer(for uid: String) -> Int { deviceBuffers[uid] ?? bufferFrames }
 
+    /// The engine's table sizes (PP_MAX_INPUTS, PP_MAX_BUSES, PP_MAX_OUTPUTS in ppcore.h).
+    public static let stripSlots = 32, busSlots = 16, outputSlots = 32
+
+    /// Strips, buses or outputs numbered outside the engine's tables. Such a file can only
+    /// come from editing by hand or damage, so it's refused when loaded, not just on change.
+    public func slotProblems() -> [String] {
+        var found: [String] = []
+        for s in strips where !(0..<Self.stripSlots).contains(s.slot) {
+            found.append("strip \"\(s.label)\" is number \(s.slot); strips go from 0 to \(Self.stripSlots - 1)")
+        }
+        for b in buses where !(0..<Self.busSlots).contains(b.slot) {
+            found.append("bus \"\(b.label)\" is number \(b.slot); buses go from 0 to \(Self.busSlots - 1)")
+        }
+        for o in outputs where !(0..<Self.outputSlots).contains(o.slot) {
+            found.append("output \"\(o.label)\" is number \(o.slot); outputs go from 0 to \(Self.outputSlots - 1)")
+        }
+        return found
+    }
+
     /// A setup that would misbehave is refused, with the reason, rather than stored.
     /// (A strip that silently lost its channel would just go quiet with no word why.)
     public func problems() -> [String] {
-        var found: [String] = []
+        var found = slotProblems()
         func endpoint(_ e: Endpoint, _ what: String) {
             switch e {
             case let .device(_, left, right):

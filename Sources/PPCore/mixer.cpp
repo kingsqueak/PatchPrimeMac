@@ -507,34 +507,83 @@ void pp_mixer_collect(PPMixer *m)
     }
 }
 
-void pp_mixer_set_input_gain(PPMixer *m, int i, float g) { m->inputs[size_t(i)].gain.store(g); }
-void pp_mixer_set_input_mute(PPMixer *m, int i, int v) { m->inputs[size_t(i)].muted.store(v != 0); }
-void pp_mixer_set_bus_gain(PPMixer *m, int i, float g) { m->buses[size_t(i)].gain.store(g); }
-void pp_mixer_set_bus_mute(PPMixer *m, int i, int v) { m->buses[size_t(i)].muted.store(v != 0); }
-void pp_mixer_set_output_gain(PPMixer *m, int i, float g) { m->outputs[size_t(i)].gain.store(g); }
-void pp_mixer_set_output_mute(PPMixer *m, int i, int v) { m->outputs[size_t(i)].muted.store(v != 0); }
+// A number outside the tables is ignored (or answered with nothing), never written past
+// them: the caller's numbers can come from a settings file someone edited by hand.
+static bool inRange(int i, int count) { return i >= 0 && i < count; }
+
+void pp_mixer_set_input_gain(PPMixer *m, int i, float g)
+{
+    if (inRange(i, PP_MAX_INPUTS)) m->inputs[size_t(i)].gain.store(g);
+}
+void pp_mixer_set_input_mute(PPMixer *m, int i, int v)
+{
+    if (inRange(i, PP_MAX_INPUTS)) m->inputs[size_t(i)].muted.store(v != 0);
+}
+void pp_mixer_set_bus_gain(PPMixer *m, int i, float g)
+{
+    if (inRange(i, PP_MAX_BUSES)) m->buses[size_t(i)].gain.store(g);
+}
+void pp_mixer_set_bus_mute(PPMixer *m, int i, int v)
+{
+    if (inRange(i, PP_MAX_BUSES)) m->buses[size_t(i)].muted.store(v != 0);
+}
+void pp_mixer_set_output_gain(PPMixer *m, int i, float g)
+{
+    if (inRange(i, PP_MAX_OUTPUTS)) m->outputs[size_t(i)].gain.store(g);
+}
+void pp_mixer_set_output_mute(PPMixer *m, int i, int v)
+{
+    if (inRange(i, PP_MAX_OUTPUTS)) m->outputs[size_t(i)].muted.store(v != 0);
+}
 
 void pp_mixer_set_input_to_bus(PPMixer *m, int i, int b, float g)
 {
-    m->inputToBus[i][b].target.store(g, std::memory_order_relaxed);
+    if (inRange(i, PP_MAX_INPUTS) && inRange(b, PP_MAX_BUSES)) {
+        m->inputToBus[i][b].target.store(g, std::memory_order_relaxed);
+    }
 }
 void pp_mixer_set_input_to_output(PPMixer *m, int i, int o, float g)
 {
-    m->inputToOutput[i][o].target.store(g, std::memory_order_relaxed);
+    if (inRange(i, PP_MAX_INPUTS) && inRange(o, PP_MAX_OUTPUTS)) {
+        m->inputToOutput[i][o].target.store(g, std::memory_order_relaxed);
+    }
 }
 void pp_mixer_set_bus_to_output(PPMixer *m, int b, int o, float g)
 {
-    m->busToOutput[b][o].target.store(g, std::memory_order_relaxed);
+    if (inRange(b, PP_MAX_BUSES) && inRange(o, PP_MAX_OUTPUTS)) {
+        m->busToOutput[b][o].target.store(g, std::memory_order_relaxed);
+    }
 }
 
-void pp_mixer_set_input_active(PPMixer *m, int i, int v) { m->inputs[size_t(i)].active.store(v != 0); }
-void pp_mixer_set_bus_active(PPMixer *m, int i, int v) { m->buses[size_t(i)].active.store(v != 0); }
-void pp_mixer_set_output_active(PPMixer *m, int i, int v) { m->outputs[size_t(i)].active.store(v != 0); }
+void pp_mixer_set_input_active(PPMixer *m, int i, int v)
+{
+    if (inRange(i, PP_MAX_INPUTS)) m->inputs[size_t(i)].active.store(v != 0);
+}
+void pp_mixer_set_bus_active(PPMixer *m, int i, int v)
+{
+    if (inRange(i, PP_MAX_BUSES)) m->buses[size_t(i)].active.store(v != 0);
+}
+void pp_mixer_set_output_active(PPMixer *m, int i, int v)
+{
+    if (inRange(i, PP_MAX_OUTPUTS)) m->outputs[size_t(i)].active.store(v != 0);
+}
 
-float *pp_mixer_input_left(PPMixer *m, int i) { return m->inputs[size_t(i)].audio.left; }
-float *pp_mixer_input_right(PPMixer *m, int i) { return m->inputs[size_t(i)].audio.right; }
-const float *pp_mixer_output_left(const PPMixer *m, int o) { return m->outputs[size_t(o)].audio.left; }
-const float *pp_mixer_output_right(const PPMixer *m, int o) { return m->outputs[size_t(o)].audio.right; }
+float *pp_mixer_input_left(PPMixer *m, int i)
+{
+    return inRange(i, PP_MAX_INPUTS) ? m->inputs[size_t(i)].audio.left : nullptr;
+}
+float *pp_mixer_input_right(PPMixer *m, int i)
+{
+    return inRange(i, PP_MAX_INPUTS) ? m->inputs[size_t(i)].audio.right : nullptr;
+}
+const float *pp_mixer_output_left(const PPMixer *m, int o)
+{
+    return inRange(o, PP_MAX_OUTPUTS) ? m->outputs[size_t(o)].audio.left : nullptr;
+}
+const float *pp_mixer_output_right(const PPMixer *m, int o)
+{
+    return inRange(o, PP_MAX_OUTPUTS) ? m->outputs[size_t(o)].audio.right : nullptr;
+}
 
 int pp_mixer_attach_tap(PPMixer *m, int kind, int slot, PPTap *tap)
 {

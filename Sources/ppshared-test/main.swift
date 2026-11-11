@@ -248,6 +248,13 @@ do {
     check("the broken file is kept, not overwritten", all.contains { $0.hasPrefix("settings.unreadable-") })
     try store.save(recovered.settings)
     check("saving works again after recovery", store.load().note == nil)
+    var outside = recovered.settings
+    outside.strips[0].slot = 40
+    check("a strip numbered past the engine's tables is refused", !outside.problems().isEmpty)
+    try JSONEncoder().encode(outside).write(to: folder.appendingPathComponent("settings.json"))
+    let refused = store.load()
+    check("such a file loads a backup instead", refused.note != nil && refused.settings.strips[0].slot != 40,
+          "\(refused.settings.strips[0].slot) \(refused.note ?? "no note")")
 } catch {
     check("store", false, "\(error)")
 }
